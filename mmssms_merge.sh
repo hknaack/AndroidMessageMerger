@@ -2,6 +2,7 @@
 
 PROGNAME="$0"
 BASENAME=$(basename ${PROGNAME})
+OUTDB=
 
 # print usage
 usage() {
@@ -13,10 +14,37 @@ Usage:
 
 Options:
 -h		Print this help text.
+-o file.db	Filename of SQlite database, into which messages should be
+		merged. (required option!)
 
 EOF
 
 	exit 1
+}
+
+# Output error messages to stderr
+echo_err () {
+	echo "$@" >&2
+}
+
+filecheck() {
+	[[ ! -f "$1" && ! -r "$1" ]] && return 1
+	[[ "$2" == "w" && ! -w "$1" ]] && {
+		echo_err "Error: File $1 is not writable!"
+		return 1
+	}
+
+	return 0
+}
+
+outfile() {
+	filecheck "$1" "w" || {
+		echo_err "Error: Output file could not be opened!"
+		exit 1
+	}
+	OUTDB="$1"
+
+	return 0
 }
 
 # check parameters
@@ -24,15 +52,17 @@ EOF
 [[ $# -eq 0 ]] && usage
 
 # parse options
-while getopts ":h" option
+while getopts ":ho:" option
 	do
 		case "$option" in
 			h|\?) usage
 			;;
+			o) outfile "$OPTARG"
+			;;
 		esac
 	done
 shift $(($OPTIND - 1))
-
+[[ -z $OUTDB ]] && usage
 # create lookup table from canonical_addresses (destination database) containing
 # _id address and stripped down phone numbers in international format
 #  (separators removed)
