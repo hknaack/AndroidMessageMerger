@@ -3,6 +3,9 @@
 PROGNAME="$0"
 BASENAME=$(basename ${PROGNAME})
 OUTDB=
+SQLITEBIN="sqlite3"
+OUTDBFIFO=/tmp/outdb.fifo
+LINESEPARATOR=$'\f'
 
 # print usage
 usage() {
@@ -62,11 +65,30 @@ while getopts ":ho:" option
 		esac
 	done
 shift $(($OPTIND - 1))
+
 [[ -z $OUTDB ]] && usage
+
 # create lookup table from canonical_addresses (destination database) containing
 # _id address and stripped down phone numbers in international format
-#  (separators removed)
+# (separators removed)
+[[ -e "$OUTDBFIFO" ]] || mkfifo "$OUTDBFIFO"
 
+LUT_COUNT=0
+QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
+"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
+
+while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
+	do
+		LUT_ID["$LUT_COUNT"]=$CANONICALID
+		LUT_ADDRESS["$LUT_COUNT"]=$CANONICALADDRESS
+		((LUT_COUNT++))
+	done < "$OUTDBFIFO"
+
+# Dump content of lookup table for debugging
+for ((i = 0; i < LUT_COUNT; i++))
+	do
+		echo -e "Lookup-Table ID: ${LUT_ID[$i]} \t Address: ${LUT_ADDRESS[$i]}"
+	done
 
 # query source database, cycle through entries
 
@@ -98,3 +120,6 @@ shift $(($OPTIND - 1))
 
 
 # next entry of source database
+
+# clean up
+rm "$OUTDBFIFO"
