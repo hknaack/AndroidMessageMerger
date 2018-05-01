@@ -1,10 +1,37 @@
 #!/bin/bash
 
-# print usage
+PROGNAME="$0"
+BASENAME=$(basename ${PROGNAME})
 
+# print usage
+usage() {
+	cat <<-EOF
+Usage:
+	$BASENAME [options]
+
+	Merge a mmssms.db SQlite message database with an existing one.
+
+Options:
+-h		Print this help text.
+
+EOF
+
+	exit 1
+}
 
 # check parameters
+# print usage if run without options
+[[ $# -eq 0 ]] && usage
 
+# parse options
+while getopts ":h" option
+	do
+		case "$option" in
+			h|\?) usage
+			;;
+		esac
+	done
+shift $(($OPTIND - 1))
 
 # create lookup table from canonical_addresses (destination database) containing
 # _id address and stripped down phone numbers in international format
