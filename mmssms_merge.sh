@@ -261,18 +261,34 @@ while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 		((LUT_COUNT++))
 done < "$INDBFIFO"
 
-# strip down address
+# get a local copy of table threads of destination database
+THREAD_COUNT=0
+QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
+	      read, type, error, has_attachment \
+       FROM threads \
+       ORDER BY _id ASC;"
+"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
 
+while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
+	do
+		THREAD_ID["$THREAD_COUNT"]=$T_ID
+		THREAD_DATE["$THREAD_COUNT"]=$T_DATE
+		THREAD_MCOUNT["$THREAD_COUNT"]=$T_MCOUNT
+		THREAD_RID["$THREAD_COUNT"]=$T_RID
+		THREAD_SNIPPET["$THREAD_COUNT"]=$T_SNIPPET
+		THREAD_SNIPPETCS["$THREAD_COUNT"]=$T_SNIPPETCS
+		THREAD_READ["$THREAD_COUNT"]=$T_READ
+		THREAD_TYPE["$THREAD_COUNT"]=$T_TYPE
+		THREAD_ERROR["$THREAD_COUNT"]=$T_ERROR
+		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$T_HASATTACHMENT
+		((THREAD_COUNT++))
+	done < "$OUTDBFIFO"
 
-# compare address with lookup table
-
-
-# if not existing, add entry to table canonical_addresses in destination
-# database
-# "INSERT INTO canonical_addresses (address) VALUES (\"${address.Source}\");"
-
-# get _id of that entry
-# "SELECT DISTINCT _id FROM canonical_addresses WHERE address=\"${address.Source}\";"
+# dump content of threads table for debugging
+for ((i = 0; i < THREAD_COUNT; i++))
+	do
+		echo -e "TID: ${THREAD_ID[$i]} TDate: ${THREAD_DATE[$i]} TRead: ${THREAD_READ[$i]} TSnippet: ${THREAD_SNIPPET[$i]:0:10} TRID: ${THREAD_RID[$i]}"
+	done
 
 # add entry to table threads in destination database
 # "INSERT INTO threads (recipient_ids) VALUES (?)", _id
