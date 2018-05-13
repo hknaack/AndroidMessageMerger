@@ -4,6 +4,8 @@ PROGNAME="$0"
 BASENAME=$(basename ${PROGNAME})
 INDB=
 OUTDB=
+BACKUP="true"
+BACKUP_EXT=".bak"
 SQLITEBIN="sqlite3"
 INDBFIFO=/tmp/indb.fifo
 OUTDBFIFO=/tmp/outdb.fifo
@@ -23,6 +25,8 @@ Usage:
 Options:
 -a		Adjust tolerance time between messages and their threads in ms
 		(default value: 3000)
+-B		Disable automatic backup of destination database (not
+		recommended)
 -h		Print this help text.
 -i file.db	Filename of input SQlite database, where messages should be read
 		from. (required option!)
@@ -209,10 +213,12 @@ translate_cids () {
 [[ $# -eq 0 ]] && usage
 
 # parse options
-while getopts ":a:hi:o:p:r:" option
+while getopts ":a:Bhi:o:p:r:" option
 	do
 		case "$option" in
 			a) set_dateadjust "$OPTARG"
+			;;
+			B) BACKUP="false"
 			;;
 			h|\?) usage
 			;;
@@ -232,6 +238,20 @@ shift $(($OPTIND - 1))
 
 [[ ( -n $PREFIX_PATTERN && -z $PREFIX_REPLACE ) ||
    ( -z $PREFIX_PATTERN && -n $PREFIX_REPLACE)]] && usage
+
+# backup destination database unless disabled
+[[ $BACKUP == "true" ]] && {
+	BACKUPFILE="${OUTDB}${BACKUP_EXT}"
+	[[ -e "$BACKUPFILE" ]] && {
+		echo_err "Error: backup file $BACKUPFILE already exists, can not backup"
+		exit 1
+	}
+	cp "$OUTDB" "$BACKUPFILE"
+	$(cmp -s "$OUTDB" "$BACKUPFILE") || {
+		echo_err "Error: Difference between $OUTDB and its backup $BACKUPFILE"
+		exit 1
+	}
+}
 
 # create lookup table from canonical_addresses (destination database) containing
 # _id address and stripped down phone numbers in international format
