@@ -10,6 +10,7 @@ OUTDBFIFO=/tmp/outdb.fifo
 LINESEPARATOR=$'\f'
 PREFIX_PATTERN=
 PREFIX_REPLACE=
+DATE_ADJUST=3000
 
 # print usage
 usage() {
@@ -20,6 +21,8 @@ Usage:
 	Merge a mmssms.db SQlite message database with an existing one.
 
 Options:
+-a		Adjust tolerance time between messages and their threads in ms
+		(default value: 3000)
 -h		Print this help text.
 -i file.db	Filename of input SQlite database, where messages should be read
 		from. (required option!)
@@ -68,6 +71,16 @@ outfile() {
 	OUTDB="$1"
 
 	return 0
+}
+
+set_dateadjust () {
+	local number="$1"
+	case $number in
+		''|*[!0-9]*) usage
+		;;
+		*) DATE_ADJUST=$number
+		;;
+	esac
 }
 
 # strip out separators
@@ -196,9 +209,11 @@ translate_cids () {
 [[ $# -eq 0 ]] && usage
 
 # parse options
-while getopts ":hi:o:p:r:" option
+while getopts ":a:hi:o:p:r:" option
 	do
 		case "$option" in
+			a) set_dateadjust "$OPTARG"
+			;;
 			h|\?) usage
 			;;
 			i) infile "$OPTARG"
@@ -308,6 +323,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		THREAD_ERROR["$THREAD_COUNT"]=$T_ERROR
 		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$T_HASATTACHMENT
 		THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$(wordcount "$T_RID")
+		THREAD_LUT["$T_ID"]="$THREAD_COUNT"
 		((THREAD_COUNT++))
 	done < "$OUTDBFIFO"
 
@@ -328,6 +344,7 @@ QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
 
 while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
 	do
+		echo "-------------------------"
 		IN_THREAD_NUM_MEMBERS=$(wordcount "$T_RID")
 		echo -e "TID: $T_ID TDate: $T_DATE TRead: $T_READ TSnippet: ${T_SNIPPET:0:10} TRID: $T_RID TMembers: $IN_THREAD_NUM_MEMBERS"
 		TR_RID=$(translate_cids "$T_RID")
@@ -346,7 +363,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 
 # no thread match: copy entry to destination database
 		Q_DATE=$(sqlquote "$T_DATE")
-		Q_MCOUNT=$(sqlquote "$T_MCOUNT")
+		Q_MCOUNT=0 # a trigger will update this on every insert
 		Q_RID=$(sqlquote "$TR_RID")
 		Q_SNIPPET=$(sqlquote "$T_SNIPPET")
 		Q_SNIPPETCS=$(sqlquote "$T_SNIPPETCS")
@@ -368,7 +385,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		THREAD_ID["$THREAD_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
 		TTBL_TID["$T_ID"]=${THREAD_ID["$THREAD_COUNT"]}
 		THREAD_DATE["$THREAD_COUNT"]=$T_DATE
-		THREAD_MCOUNT["$THREAD_COUNT"]=$T_MCOUNT
+		THREAD_MCOUNT["$THREAD_COUNT"]=$T_MCOUNT # set to zero for starters or keep for reference?
 		THREAD_RID["$THREAD_COUNT"]=$T_RID
 		THREAD_SNIPPET["$THREAD_COUNT"]=$T_SNIPPET
 		THREAD_SNIPPETCS["$THREAD_COUNT"]=$T_SNIPPETCS
@@ -377,21 +394,121 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		THREAD_ERROR["$THREAD_COUNT"]=$T_ERROR
 		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$T_HASATTACHMENT
 		THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$IN_THREAD_NUM_MEMBERS
+		THREAD_LUT["${THREAD_ID[$THREAD_COUNT]}"]=$THREAD_COUNT
 		echo -e "no thread match found, adding to destination: TID: ${THREAD_ID[$THREAD_COUNT]} TDate: ${THREAD_DATE[$THREAD_COUNT]} TRead: ${THREAD_READ[$THREAD_COUNT]} TSnippet: ${THREAD_SNIPPET[$THREAD_COUNT]:0:10} TRID: ${THREAD_RID[$THREAD_COUNT]} TMembers: $(wordcount ${THREAD_RID[$THREAD_COUNT]})"
 		((THREAD_COUNT++))
 	done < "$INDBFIFO"
 
-# update table threads
-# "UPDATE threads SET message_count=message_count + 1,snippet=?,'date'=? WHERE recipient_ids=? ", body.Source, date.Source, _id]
+# read and process all messages from source database
+QUERY="SELECT thread_id, address, person, date, protocol, read, status, type, \
+	      reply_path_present, subject, body, service_center, locked, \
+	      error_code, seen \
+       FROM sms;"
+"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" "$QUERY" > "$INDBFIFO" &
 
-# get thread_id of that entry
-# "SELECT _id FROM threads WHERE recipient_ids=? ", _id
+while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROTOCOL S_READ S_STATUS S_TYPE S_REPLY_PATH_PRESENT S_SUBJECT S_BODY S_SERVICE_CENTER S_LOCKED S_ERROR_CODE S_SEEN
+	do
+		[[ -z "$S_ADDRESS" ]] && {
+			echo "Skipping message with empty Address containing '${S_BODY:0:20}...'"
+			continue
+		}
+		[[ -z "$S_TID" ]] && {
+			echo "Skipping message with empty Thread_ID containing '${S_BODY:0:20}...'"
+			continue
+		}
 
 # add entry to table sms
-# "INSERT INTO sms (address,'date',body,thread_id,read,type,seen) VALUES (?,?,?,?,1,?,1)", address.Source,date.Source,body.Source,Thread_id,type.Source
+		echo "-------------------------------------"
+		OUT_TID=${TTBL_TID["$S_TID"]}
+		Q_TID=$(sqlquote "$OUT_TID")
+		Q_ADDRESS=$(sqlquote "$S_ADDRESS")
+		Q_PERSON=$(sqlquote "$S_PERSON")
+		Q_DATE=$(sqlquote "$S_DATE")
+		Q_PROTOCOL=$(sqlquote "$S_PROTOCOL")
+		Q_READ=$(sqlquote "$S_READ")
+		Q_STATUS=$(sqlquote "$S_STATUS")
+		Q_TYPE=$(sqlquote "$S_TYPE")
+		Q_REPLY_PATH_PRESENT=$(sqlquote "$S_REPLY_PATH_PRESENT")
+		Q_SUBJECT=$(sqlquote "$S_SUBJECT")
+		Q_BODY=$(sqlquote "$S_BODY")
+		Q_SERVICE_CENTER=$(sqlquote "$S_SERVICE_CENTER")
+		Q_LOCKED=$(sqlquote "$S_LOCKED")
+		Q_ERROR_CODE=$(sqlquote "$S_ERROR_CODE")
+		Q_SEEN=$(sqlquote "$S_SEEN")
+		echo -e "Adding message to destination. TID: $Q_TID Date: $Q_DATE Address: $Q_ADDRESS Subject: '${Q_SUBJECT:0:10}' Body: '${Q_BODY:0:10}'"
 
+		QUERY="INSERT INTO sms (thread_id, address, person, date, \
+					protocol, read, status, type, \
+					reply_path_present, subject, body, \
+					service_center, locked, error_code, \
+					seen) \
+		       VALUES ('${Q_TID}', '${Q_ADDRESS}', '${Q_PERSON}', \
+			       '${Q_DATE}', '${Q_PROTOCOL}', '${Q_READ}', \
+			       '${Q_STATUS}', '${Q_TYPE}', \
+			       '${Q_REPLY_PATH_PRESENT}', '${Q_SUBJECT}', \
+			       '${Q_BODY}', '${Q_SERVICE_CENTER}', \
+			       '${Q_LOCKED}', '${Q_ERROR_CODE}', '${Q_SEEN}');"
+		"$SQLITEBIN" "$OUTDB" "$QUERY"
 
+		ENTRY=${THREAD_LUT[$OUT_TID]}
+# if sms date is lower than thread date, write back current thread entry
+		if [[ ${THREAD_DATE["$ENTRY"]} -ge $((S_DATE + DATE_ADJUST)) ]]
+			then
+				Q_TDATE=$(sqlquote "${THREAD_DATE[$ENTRY]}")
+				Q_SNIPPET=$(sqlquote "${THREAD_SNIPPET[$ENTRY]}")
+				Q_SNIPPETCS=$(sqlquote "${THREAD_SNIPPETCS[$ENTRY]}")
+				Q_READ=$(sqlquote "${THREAD_READ[$ENTRY]}")
+				Q_TYPE=$(sqlquote "${THREAD_TYPE[$ENTRY]}")
+				Q_ERROR=$(sqlquote "${THREAD_ERROR[$ENTRY]}")
+				Q_HASATTACHMENT=$(sqlquote "${THREAD_HASATTACHMENT[$ENTRY]}")
+				echo -e "Destination T-Date ${THREAD_DATE[$ENTRY]} newer than adjusted M-Date $((S_DATE + DATE_ADJUST)), writing back. '${Q_SNIPPET:0:10}...'"
+
+				QUERY="UPDATE threads \
+				       SET date='${Q_TDATE}', \
+					   snippet='${Q_SNIPPET}', \
+					   snippet_cs='${Q_SNIPPETCS}', \
+					   read='${Q_READ}', type='${Q_TYPE}', \
+					   error='${Q_ERROR}', \
+					   has_attachment='${Q_HASATTACHMENT}' \
+				       WHERE _id='${Q_TID}';"
+				"$SQLITEBIN" "$OUTDB" "$QUERY"
+			else
+# otherwise overwrite thread date and read in new thread content
+				OLD_THREAD_DATE=${THREAD_DATE["$ENTRY"]}
+                               QUERY="UPDATE threads \
+                                      SET date='${Q_DATE}' \
+                                      WHERE _id='${Q_TID}';"
+                               "$SQLITEBIN" "$OUTDB" "$QUERY"
+
+				QUERY="SELECT date, message_count, snippet, \
+					      snippet_cs, read, type, error, \
+					      has_attachment \
+				       FROM threads \
+				       WHERE _id='${Q_TID}';"
+				"$SQLITEBIN" $OUTDB -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
+				COUNT=0
+
+				while IFS='|' read -r -d "$LINESEPARATOR" T_DATE T_MCOUNT T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
+					do
+						[[ $((COUNT++)) -ge 1 ]] && {
+							echo "Error reading thread entry. COUNT should be 1, but is ${COUNT}"
+							exit 1
+						}
+						THREAD_DATE["$ENTRY"]=$T_DATE
+						THREAD_MCOUNT["$ENTRY"]=$T_MCOUNT
+						THREAD_SNIPPET["$ENTRY"]=$T_SNIPPET
+						THREAD_SNIPPETCS["$ENTRY"]=$T_SNIPPETCS
+						THREAD_READ["$ENTRY"]=$T_READ
+						THREAD_TYPE["$ENTRY"]=$T_TYPE
+						THREAD_ERROR["$ENTRY"]=$T_ERROR
+						THREAD_HASATTACHMENT["$ENTRY"]=$T_HASATTACHMENT
+						echo -e "Destination Thread date $OLD_THREAD_DATE is older than adjusted message date $((S_DATE + DATE_ADJUST)), reading in snippet '${T_SNIPPET:0:10}'"
+					done < "$OUTDBFIFO"
+			fi
 # next entry of source database
+	done < "$INDBFIFO"
+
+echo "Merging done, cleaning up."
 
 # clean up
 rm "$INDBFIFO" "$OUTDBFIFO"
