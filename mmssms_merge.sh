@@ -7,8 +7,7 @@ OUTDB=
 BACKUP="true"
 BACKUP_EXT=".bak"
 SQLITEBIN="sqlite3"
-INDBFIFO=/tmp/indb.fifo
-OUTDBFIFO=/tmp/outdb.fifo
+FIFODIR="/tmp"
 LINESEPARATOR=$'\f'
 PREFIX_PATTERN=
 PREFIX_REPLACE=
@@ -27,6 +26,8 @@ Options:
 		(default value: 3000)
 -B		Disable automatic backup of destination database (not
 		recommended)
+-f		Directory (with write permission) to use for temporary FIFO
+		files (defaults to /tmp)
 -h		Print this help text.
 -i file.db	Filename of input SQlite database, where messages should be read
 		from. (required option!)
@@ -55,6 +56,16 @@ filecheck() {
 	}
 
 	return 0
+}
+
+fifodir () {
+	[[ -d "$1" && -w "$1" ]] && {
+		FIFODIR=$1
+		return 0
+	}
+
+	echo_err "Error: directory for FIFOs does not exist or is not writable"
+	exit 1
 }
 
 infile() {
@@ -213,12 +224,14 @@ translate_cids () {
 [[ $# -eq 0 ]] && usage
 
 # parse options
-while getopts ":a:Bhi:o:p:r:" option
+while getopts ":a:Bf:hi:o:p:r:" option
 	do
 		case "$option" in
 			a) set_dateadjust "$OPTARG"
 			;;
 			B) BACKUP="false"
+			;;
+			f) fifodir "$OPTARG"
 			;;
 			h|\?) usage
 			;;
@@ -256,6 +269,7 @@ shift $(($OPTIND - 1))
 # create lookup table from canonical_addresses (destination database) containing
 # _id address and stripped down phone numbers in international format
 # (separators removed)
+OUTDBFIFO=${FIFODIR}"/outdb.fifo"
 [[ -e "$OUTDBFIFO" ]] || mkfifo "$OUTDBFIFO"
 
 LUT_COUNT=0
@@ -277,6 +291,7 @@ for ((i = 0; i < LUT_COUNT; i++))
 	done
 
 # query source database, cycle through entries
+INDBFIFO=${FIFODIR}"/indb.fifo"
 [[ -e "$INDBFIFO" ]] || mkfifo "$INDBFIFO"
 
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
