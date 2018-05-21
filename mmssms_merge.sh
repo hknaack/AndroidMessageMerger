@@ -111,6 +111,40 @@ fifodir () {
 	return 0
 }
 
+# Create a FIFO, if it does not yet exist
+#
+# Usage:	create_fifo "$filename"
+#
+# $filename:	path and file name of the FIFO
+# returns:	0 if FIFO was properly created, otherwise exits with code 1 and
+#		an error message is sent to stderr
+
+create_fifo () {
+	[[ -p "$1" ]] || {
+		mkfifo "$1" || {
+			echo_err "Error: FIFO $1 could not be created!"
+			exit 1
+		}
+	}
+
+	[[ -p "$1" ]] || {
+		echo_err "Error: FIFO $1 does not exist!"
+		exit 1
+	}
+
+	[[ -r "$1" ]] || {
+		echo_err "Error: FIFO $1 is not readable!"
+		exit 1
+	}
+
+	[[ -w "$1" ]] || {
+		echo_err "Error: FIFO $1 is not writable!"
+		exit 1
+	}
+
+	return 0
+}
+
 # Check the input file for existence and read permission
 #
 # Usage:	infile "$filename"
@@ -416,7 +450,7 @@ fifodir "$FIFODIR"
 # _id, address and stripped down phone numbers in international format
 # (separators removed)
 OUTDBFIFO=${FIFODIR}"/outdb.fifo"
-[[ -e "$OUTDBFIFO" ]] || mkfifo "$OUTDBFIFO"
+create_fifo "$OUTDBFIFO"
 
 LUT_COUNT=0
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
@@ -438,7 +472,7 @@ for ((i = 0; i < LUT_COUNT; i++))
 
 # Query source database, cycle through entries
 INDBFIFO=${FIFODIR}"/indb.fifo"
-[[ -e "$INDBFIFO" ]] || mkfifo "$INDBFIFO"
+create_fifo "$INDBFIFO"
 
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
 "$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" "$QUERY" > "$INDBFIFO" &
