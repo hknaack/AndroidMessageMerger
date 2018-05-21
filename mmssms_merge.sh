@@ -6,6 +6,7 @@ INDB=
 OUTDB=
 BACKUP="true"
 BACKUP_EXT=".bak"
+DRYRUN="false"
 SQLITEBIN="sqlite3"
 FIFODIR="/tmp"
 COLSEPARATOR='|'
@@ -34,6 +35,8 @@ Options:
 		recommended)
 -c string	Coloumn separator used for SQlite database queries (should not
 		be used in the database entries, default value: '|')
+-d		Dry run. Just list the found phone numbers and its matches, then
+		exit.
 -f		Directory (with write permission) to use for temporary FIFO
 		files (defaults to /tmp)
 -h		Print this help text.
@@ -184,6 +187,17 @@ outfile() {
 	OUTDB="$1"
 
 	return 0
+}
+
+# Clean up anything, that should not remain
+#
+# Usage:	cleanup
+#
+# returns:	0 on success
+
+cleanup (){
+	[[ -p "$INDBFIFO" ]] && rm "$INDBFIFO"
+	[[ -p "$OUTDBFIFO" ]] && rm "$OUTDBFIFO"
 }
 
 # Assemble a wildcard WHERE-string from a list of coloumns and a string of
@@ -562,7 +576,7 @@ translate_cids () {
 [[ $# -eq 0 ]] && usage
 
 # Parse options
-while getopts ":a:Bc:f:hi:l:o:p:r:" option
+while getopts ":a:Bc:df:hi:l:o:p:r:" option
 	do
 		case "$option" in
 			a) set_dateadjust "$OPTARG"
@@ -570,6 +584,8 @@ while getopts ":a:Bc:f:hi:l:o:p:r:" option
 			B) BACKUP="false"
 			;;
 			c) COLSEPARATOR="$OPTARG"
+			;;
+			d) DRYRUN="true"
 			;;
 			f) FIFODIR="$OPTARG"
 			;;
@@ -675,21 +691,28 @@ while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 				NEW_ADDR=$(sqlquote "$CANONICALADDRESS")
 		fi
 
-		QUERY="INSERT INTO canonical_addresses (address) VALUES ('${NEW_ADDR}');"
-		"$SQLITEBIN" "$OUTDB" "$QUERY"
+		[[ "$DRYRUN" == 'false' ]] && {
+			QUERY="INSERT INTO canonical_addresses (address) VALUES ('${NEW_ADDR}');"
+			"$SQLITEBIN" "$OUTDB" "$QUERY"
 
 # Query the destination database for the _id of this new entry and add a new
 # entry to the lookup table
-		QUERY="SELECT _id \
-		       FROM canonical_addresses \
-		       WHERE address='${NEW_ADDR}';"
-		LUT_ID["$LUT_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
-		LUT_ADDRESS["$LUT_COUNT"]=$NEW_ADDR
-		LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$CAN_ADDR_STRIPPED
-		TTBL_ID["$CANONICALID"]=${LUT_ID[$LUT_COUNT]}
-		echo "address $NEW_ADDR was added to outfile, its new _id is ${LUT_ID[$LUT_COUNT]}"
-		((LUT_COUNT++))
+			QUERY="SELECT _id \
+			       FROM canonical_addresses \
+			       WHERE address='${NEW_ADDR}';"
+			LUT_ID["$LUT_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
+			LUT_ADDRESS["$LUT_COUNT"]=$NEW_ADDR
+			LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$CAN_ADDR_STRIPPED
+			TTBL_ID["$CANONICALID"]=${LUT_ID[$LUT_COUNT]}
+			echo "address $NEW_ADDR was added to outfile, its new _id is ${LUT_ID[$LUT_COUNT]}"
+			((LUT_COUNT++))
+		}
 done < "$INDBFIFO"
+
+[[ "$DRYRUN" == 'true' ]] && {
+	cleanup
+	exit 0
+}
 
 # Get a local copy of table threads of destination database
 THREAD_COUNT=0
@@ -900,4 +923,4 @@ while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_D
 echo "Merging done, cleaning up."
 
 # Clean up
-rm "$INDBFIFO" "$OUTDBFIFO"
+cleanup
