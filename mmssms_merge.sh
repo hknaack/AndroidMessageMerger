@@ -8,6 +8,7 @@ BACKUP="true"
 BACKUP_EXT=".bak"
 SQLITEBIN="sqlite3"
 FIFODIR="/tmp"
+COLSEPARATOR='|'
 LINESEPARATOR=$'\f'
 PREFIX_PATTERN=
 PREFIX_REPLACE=
@@ -31,11 +32,15 @@ Options:
 		(default value: 3000)
 -B		Disable automatic backup of destination database (not
 		recommended)
+-c string	Coloumn separator used for SQlite database queries (should not
+		be used in the database entries, default value: '|')
 -f		Directory (with write permission) to use for temporary FIFO
 		files (defaults to /tmp)
 -h		Print this help text.
 -i file.db	Filename of input SQlite database, where messages should be read
 		from. (required option!)
+-l string	Line separator used for SQlite database queries (should not be
+		used in the database entries, default value: '\f')
 -o file.db	Filename of SQlite database, into which messages should be
 		merged. (required option!)
 -p string	National phone number prefix to be replaced with -r (only works
@@ -177,6 +182,162 @@ outfile() {
 		exit 1
 	}
 	OUTDB="$1"
+
+	return 0
+}
+
+# Assemble a wildcard WHERE-string from a list of coloumns and a string of
+# characters to check for
+#
+# Usage:	assemble_wherestring "$coloumns" "$chars"
+#
+# $coloumns:	string of coloumn names separated by whitespaces
+# $chars:	string of character sequence to check for in coloumns
+# returns:	SQL WHERE-string, which checks for the character sequence in
+# 		each mentioned coloumn, on stdout
+
+assemble_wherestring () {
+	local coloumns=$1
+	local chars=$2
+	local string quoted_chars col
+	local col_count=0
+
+	quoted_chars=$(sqlquote "$chars")
+	string=$(
+		for col in $coloumns
+			do
+				[[ $col_count -gt 0 ]] && echo -n "OR "
+				echo -n "${col} LIKE '%${quoted_chars}%' "
+				((col_count++))
+			done)
+
+	echo "${string[@]}"
+}
+
+# Check database tables coloumns for a character sequence
+#
+# Usage:	check_cols "$dbfile" "$table" "$coloumns" "$chars"
+#
+# $dbfile:	SQlite database file
+# $table:	table name
+# $coloumns:	string of space separated coloumns names to check
+# $chars:	string of characters to check for
+# returns:	amount of matches on stdout
+
+check_cols () {
+	local dbfile=$1
+	local table=$2
+	local coloumns=$3
+	local chars=$4
+	local count query where
+
+	where=$(assemble_wherestring "$coloumns" "$chars")
+	query="SELECT COUNT(${coloumns%% *}) FROM $table WHERE ${where};"
+	count=$("$SQLITEBIN" "$dbfile" "$query")
+
+	echo "$count"
+}
+
+# Check the canonical_addresses table for a character sequence
+#
+# Usage:	check_canonical_addresses "$dbfile" "$chars"
+#
+# $dbfile:	SQlite database file
+# $chars:	string of characters to check for
+# returns:	amount of matches on stdout
+
+check_canonical_addresses () {
+	local dbfile=$1
+	local chars=$2
+	local cols='_id address'
+
+	echo $(check_cols "$dbfile" "canonical_addresses" "$cols" "$chars")
+}
+
+# Check the threads table for a character sequence
+#
+# Usage:	check_threads "$dbfile" "$chars"
+#
+# $dbfile:	SQlite database file
+# $chars:	string of characters to check for
+# returns:	amount of matches on stdout
+
+check_threads () {
+	local dbfile=$1
+	local chars=$2
+	local cols="_id date message_count recipient_ids snippet snippet_cs read \
+		    type error has_attachment"
+
+	echo $(check_cols "$dbfile" "threads" "$cols" "$chars")
+}
+
+# Check the sms table for a character sequence
+#
+# Usage:	check_sms "$dbfile" "$chars"
+#
+# $dbfile:	SQlite database file
+# $chars:	string of characters to check for
+# returns:	amount of matches on stdout
+
+check_sms () {
+	local dbfile=$1
+	local chars=$2
+	local cols="thread_id address person date protocol read status type \
+		    reply_path_present subject body service_center locked \
+		    error_code seen"
+
+	echo $(check_cols "$dbfile" "sms" "$cols" "$chars")
+}
+
+# Check the canonical_addresses, threads and sms table for a character sequence
+#
+# Usage:	check_db "$dbfile" "$chars"
+#
+# $dbfile:	SQlite database file
+# $chars:	string of characters to check for
+# returns:	amount of matches on stdout
+
+check_db () {
+	local dbfile=$1
+	local chars=$2
+	local matches=0
+	local ret
+
+	ret=$(check_canonical_addresses "$dbfile" "$chars")
+	((matches += ret))
+
+	ret=$(check_threads "$dbfile" "$chars")
+	((matches += ret))
+
+	ret=$(check_sms "$dbfile" "$chars")
+	((matches += ret))
+
+	echo "$matches"
+}
+
+# Check the database for entries containing the used coloumn or line separator
+#
+# Usage:	check_db_separators "$dbfile"
+#
+# $dbfile:	SQlite database file
+# returns:	code 0 if the database entries do not contain a used separator
+#		string, otherwise exit with code 1 and print a message to stderr
+
+check_db_separators () {
+	local dbfile=$1
+	local ret
+
+	ret=$(check_db "$dbfile" "$COLSEPARATOR")
+	[[ $ret -gt 0 ]] && {
+		echo_err "Error: database $dbfile has got $ret entries containing coloumn separator '$COLSEPARATOR'. Use the -c option to specify a different one!"
+		exit 1
+	}
+
+	ret=$(check_db "$dbfile" "$LINESEPARATOR")
+	[[ $ret -gt 0 ]] && {
+		echo_err "Error: database $dbfile has got $ret entries containing line separator '$LINESEPARATOR'. Use the -l option to specify a different one!"
+		exit 1
+	}
 
 	return 0
 }
@@ -401,18 +562,22 @@ translate_cids () {
 [[ $# -eq 0 ]] && usage
 
 # Parse options
-while getopts ":a:Bf:hi:o:p:r:" option
+while getopts ":a:Bc:f:hi:l:o:p:r:" option
 	do
 		case "$option" in
 			a) set_dateadjust "$OPTARG"
 			;;
 			B) BACKUP="false"
 			;;
+			c) COLSEPARATOR="$OPTARG"
+			;;
 			f) FIFODIR="$OPTARG"
 			;;
 			h|\?) usage
 			;;
 			i) infile "$OPTARG"
+			;;
+			l) LINESEPARATOR="$OPTARG"
 			;;
 			o) outfile "$OPTARG"
 			;;
@@ -443,6 +608,11 @@ shift $(($OPTIND - 1))
 	}
 }
 
+# Check if selected coloumn separator and line separator are unused in database
+# entries.
+check_db_separators "$INDB"
+check_db_separators "$OUTDB"
+
 # Check if FIFO directory can be used
 fifodir "$FIFODIR"
 
@@ -454,9 +624,9 @@ create_fifo "$OUTDBFIFO"
 
 LUT_COUNT=0
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
-"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
+"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
 
-while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
+while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 	do
 		LUT_ID["$LUT_COUNT"]=$CANONICALID
 		LUT_ADDRESS["$LUT_COUNT"]=$CANONICALADDRESS
@@ -475,9 +645,9 @@ INDBFIFO=${FIFODIR}"/indb.fifo"
 create_fifo "$INDBFIFO"
 
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" "$QUERY" > "$INDBFIFO" &
+"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
 
-while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
+while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 	do
 # Convert CANONICALADDRESS to international format
 		CAN_ADDR_STRIPPED=$(internationalized $(stripped "$CANONICALADDRESS"))
@@ -527,9 +697,9 @@ QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
 	      read, type, error, has_attachment \
        FROM threads \
        ORDER BY _id ASC;"
-"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
+"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
 
-while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
+while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
 	do
 		THREAD_ID["$THREAD_COUNT"]=$T_ID
 		THREAD_DATE["$THREAD_COUNT"]=$T_DATE
@@ -559,9 +729,9 @@ QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
 	      read, type, error, has_attachment \
        FROM threads \
        ORDER BY _id ASC;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" "$QUERY" > "$INDBFIFO" &
+"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
 
-while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
+while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
 	do
 		echo "-------------------------"
 		IN_THREAD_NUM_MEMBERS=$(wordcount "$T_RID")
@@ -623,9 +793,9 @@ QUERY="SELECT thread_id, address, person, date, protocol, read, status, type, \
 	      reply_path_present, subject, body, service_center, locked, \
 	      error_code, seen \
        FROM sms;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" "$QUERY" > "$INDBFIFO" &
+"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
 
-while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROTOCOL S_READ S_STATUS S_TYPE S_REPLY_PATH_PRESENT S_SUBJECT S_BODY S_SERVICE_CENTER S_LOCKED S_ERROR_CODE S_SEEN
+while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROTOCOL S_READ S_STATUS S_TYPE S_REPLY_PATH_PRESENT S_SUBJECT S_BODY S_SERVICE_CENTER S_LOCKED S_ERROR_CODE S_SEEN
 	do
 		[[ -z "$S_ADDRESS" ]] && {
 			echo "Skipping message with empty Address containing '${S_BODY:0:20}...'"
@@ -704,10 +874,10 @@ while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROT
 					      has_attachment \
 				       FROM threads \
 				       WHERE _id='${Q_TID}';"
-				"$SQLITEBIN" $OUTDB -newline "$LINESEPARATOR" "$QUERY" > "$OUTDBFIFO" &
+				"$SQLITEBIN" $OUTDB -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
 				COUNT=0
 
-				while IFS='|' read -r -d "$LINESEPARATOR" T_DATE T_MCOUNT T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
+				while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_DATE T_MCOUNT T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
 					do
 						[[ $((COUNT++)) -ge 1 ]] && {
 							echo "Error reading thread entry. COUNT should be 1, but is ${COUNT}"
