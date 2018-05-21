@@ -13,7 +13,12 @@ PREFIX_PATTERN=
 PREFIX_REPLACE=
 DATE_ADJUST=3000
 
-# print usage
+# Print usage information of the script
+#
+# Usage:	usage
+#
+# returns:	exits with error code 1
+
 usage() {
 	cat <<EOF
 Usage:
@@ -44,12 +49,37 @@ EOF
 }
 
 # Output error messages to stderr
+#
+# Usage:	echo_err "$string"
+#
+# $string:	string to be sent to stderr
+# returns:	exit code of echo, usually 0
+
 echo_err () {
 	echo "$@" >&2
 }
 
+# Check a file for existence and read(/write) permission
+#
+# Usage:	filecheck "$filename" "$permission"
+#
+# $filename:	path and name of the file to check
+# $permission:	string of file permission to check for. Currently, only "w" is
+#		especially considered, "r" is always checked.
+# returns:	0 if file exists and has got the requested permissions,
+#		otherwise 1 and an error message is sent to stderr.
+
 filecheck() {
-	[[ ! -f "$1" && ! -r "$1" ]] && return 1
+	[[ -f "$1" ]] || {
+		echo_err "Error: File $1 does not exist!"
+		return 1
+	}
+
+	[[ -r "$1" ]] || {
+		echo_err "Error: File $1 is not readable!"
+		return 1
+	}
+
 	[[ "$2" == "w" && ! -w "$1" ]] && {
 		echo_err "Error: File $1 is not writable!"
 		return 1
@@ -58,15 +88,36 @@ filecheck() {
 	return 0
 }
 
+# Check for existence and write permissions of the FIFO directory
+#
+# Usage:	fifodir "$dirname"
+#
+# $dirname:	path of the directory to check
+# returns:	0 if directory exists and has got write permissions, otherwise
+#		exits with code 1 and an error message is sent to stderr.
+
 fifodir () {
-	[[ -d "$1" && -w "$1" ]] && {
-		FIFODIR=$1
-		return 0
+	[[ -d "$1" ]] || {
+		echo_err "Error: FIFO directory $1 does not exist!"
+		exit 1
 	}
 
-	echo_err "Error: directory for FIFOs does not exist or is not writable"
-	exit 1
+	[[ -w "$1" ]] || {
+		echo_err "Error: FIFO directory $1 is not writable!"
+		exit 1
+	}
+
+	FIFODIR=$1
+	return 0
 }
+
+# Check the input file for existence and read permission
+#
+# Usage:	infile "$filename"
+#
+# $filename:	path and file name to be checked
+# returns:	0 if file exists and is readable, otherwise exits with code 1
+#		and an error message is sent to stderr.
 
 infile() {
 	filecheck "$1" "r" || {
@@ -78,6 +129,14 @@ infile() {
 	return 0
 }
 
+# Check the output file for existence and write permission
+#
+# Usage:	outfile "$filename"
+#
+# $filename:	path and file name to be checked
+# returns:	0 if file exists and is readable and writable, otherwise exits
+#		with code 1 and an error message is sent to stderr.
+
 outfile() {
 	filecheck "$1" "w" || {
 		echo_err "Error: Output file could not be opened!"
@@ -88,8 +147,17 @@ outfile() {
 	return 0
 }
 
+# Set the DATE_ADJUST value
+#
+# Usage:	set_dateadjust "$number"
+#
+# $number:	integer value in ms
+# returns:	sets DATE_ADJUST on success, otherwise exits showing usage
+#		information.
+
 set_dateadjust () {
 	local number="$1"
+
 	case $number in
 		''|*[!0-9]*) usage
 		;;
@@ -98,42 +166,75 @@ set_dateadjust () {
 	esac
 }
 
-# strip out separators
+# Strip out phone number separators
+#
+# Usage:	stripped "$number"
+#
+# $number:	string containing a phone number
+# returns:	stripped phone number on stdout
+
 stripped () {
 	local strip="$1"
+
 	strip=${strip//" "}
 	strip=${strip//"-"}
 	strip=${strip//"/"}
 	strip=${strip//"("}
 	strip=${strip//")"}
+
 	echo "$strip"
 }
 
-# add international prefix
+# Add international prefix to recognized phone numbers
+#
+# Usage:	international_prefix "$number"
+#
+# $number:	string of a plain phone number
+# returns:	international phone number on stdout
+
 international_prefix () {
 	local number="$1"
+	local len
+
 	[[ ${number:0:2} == '00' ]] && number="${number/00/+}"
+
 	[[ -n $PREFIX_PATTERN && -n $PREFIX_REPLACE ]] && {
-		local LEN=${#PREFIX_PATTERN}
-		[[ ${number:0:${LEN}} == "$PREFIX_PATTERN" ]] &&
+		len=${#PREFIX_PATTERN}
+		[[ ${number:0:${len}} == "$PREFIX_PATTERN" ]] &&
 			number="${number/$PREFIX_PATTERN/$PREFIX_REPLACE}"
 	}
+
 	echo "$number"
 }
 
-# convert phone number to international format, if it starts with 00
+# Try to convert phone number to international format
+#
+# Usage:	internationalized "$number"
+#
+# $number:	string of a phone number or address
+# returns:	international phone number or address on stdout
+
 internationalized () {
 	local number="$1"
+
 	case $number in
 		''|*[!0-9]*) # NOP if it contains something else than digits
 		;;
 		* ) number=$(international_prefix "$number")
 		;;
 	esac
+
 	echo "$number"
 }
 
-# check if a given string is a phone number in international format
+# Check if a given string is a phone number in international format
+#
+# Usage:	internationalnumber "$string"
+#
+# $string:	string of a phone number to check
+# returns:	status code 0 and "true" on stdout on success, otherwise code 1
+#		and "false" on stdout
+
 internationalnumber () {
 	local number="$1"
 
@@ -150,35 +251,53 @@ internationalnumber () {
 	return 0
 }
 
-# minimum function, return the smaller of two values
+# Minimum function
+#
+# Usage:	min "$first" "$second"
+#
+# $first:	numerical value
+# $second:	numerical value
+# returns:	smallest of the two values on stdout
+
 min () {
 	echo $(( $1 < $2 ? $1 : $2 ))
 }
 
-# check if two given address strings match
-matchaddr () {
-	local FIRST="$1"
-	local SECOND="$2"
-	local EXACT="$3"
+# Check if two given address strings match
+#
+# Usage:	matchaddr "$first" "$second" "$exact"
+#
+# $first:	first string containing an address (phone number)
+# $second:	second string containing an address (phone number)
+# $exact:	if set to "true", an exact match will be performed. Otherwise,
+#		only the last characters will be compared (which should be
+#		enough in most cases)
+# returns:	status code 0 and "true" on stdout if both strings match,
+#		otherwise code 1 and "false" on stdout
 
-	if [[ $EXACT == 'true' ]]
+matchaddr () {
+	local first="$1"
+	local second="$2"
+	local exact="$3"
+	local delta first_len second_len min
+
+	if [[ $exact == 'true' ]]
 		then
-			[[ "$FIRST" == "$SECOND" ]] && {
+			[[ "$first" == "$second" ]] && {
 				echo 'true'
 				return 0
 			}
 		else
-			local FIRST_LEN=${#FIRST}
-			local SECOND_LEN=${#SECOND}
-			local DELTA
-			(( DELTA = FIRST_LEN - SECOND_LEN))
-			[[ ${DELTA##-} -ge 3 ]] && {
-				echo 'false'
+			first_len=${#first}
+			second_len=${#second}
+			(( delta = first_len - second_len))
+			[[ ${delta##-} -ge 3 ]] && {	# strips off negative sign to get absolute value
+				echo 'false'		# string sizes differ too much
 				return 1
 			}
-			local MIN=$( min "$FIRST_LEN" "$SECOND_LEN" )
-			[[ $MIN -gt 6 ]] && (( MIN -= 3))
-			[[ "${FIRST:(-$MIN)}" == "${SECOND:(-$MIN)}" ]] && {
+			min=$( min "$first_len" "$second_len" )
+			[[ $min -gt 6 ]] && (( min -= 3))
+			[[ "${first:(-$min)}" == "${second:(-$min)}" ]] && {
 				echo 'true'
 				return 0
 			}
@@ -188,17 +307,35 @@ matchaddr () {
 	return 1
 }
 
-# replace single quotes (') by two single quotes ('') for SQL content
+# Replace single quotes (') by two single quotes ('') for SQL content
+#
+# Usage:	sqlquote "$string"
+#
+# $string:	string values to be used for SQL query
+# returns:	quoted string on stdout
+
 sqlquote () {
 	echo "${1//\'/\'\'}"
 }
 
-# count words in a string
+# Count words in a string
+#
+# Usage:	wordcount "$string"
+#
+# $string:	string of words to count
+# returns:	number of words on stdout
+
 wordcount () {
 	echo $(echo "$1" | wc -w)
 }
 
-# sort words in a string
+# Sort words in a string
+#
+# Usage:	sortwords "$string"
+#
+# $string:	string of words to be sorted
+# returns:	sorted string on stdout
+
 sortwords () {
 	local sorted=$(
 		for el in $1
@@ -208,22 +345,28 @@ sortwords () {
 	echo "${sorted[@]}"
 }
 
-# translate canonical ids
+# Translate canonical ids
+#
+# Usage:	translate_cids "$members"
+#
+# $members:	string of canonical IDs to look up in translation table TTBL_ID
+# returns:	string of translated canonical IDs on stdout
+
 translate_cids () {
-	local MEMBER
-	local TRANS_MEMBER=$(
-		for MEMBER in $1
+	local member
+	local trans_member=$(
+		for member in $1
 			do
-				echo "${TTBL_ID[$MEMBER]}"
+				echo "${TTBL_ID[$member]}"
 			done)
-	echo "${TRANS_MEMBER[@]}"
+	echo "${trans_member[@]}"
 }
 
-# check parameters
-# print usage if run without options
+# Check parameters
+# Print usage if run without options
 [[ $# -eq 0 ]] && usage
 
-# parse options
+# Parse options
 while getopts ":a:Bf:hi:o:p:r:" option
 	do
 		case "$option" in
@@ -231,7 +374,7 @@ while getopts ":a:Bf:hi:o:p:r:" option
 			;;
 			B) BACKUP="false"
 			;;
-			f) fifodir "$OPTARG"
+			f) FIFODIR="$OPTARG"
 			;;
 			h|\?) usage
 			;;
@@ -252,7 +395,7 @@ shift $(($OPTIND - 1))
 [[ ( -n $PREFIX_PATTERN && -z $PREFIX_REPLACE ) ||
    ( -z $PREFIX_PATTERN && -n $PREFIX_REPLACE)]] && usage
 
-# backup destination database unless disabled
+# Backup destination database, unless disabled
 [[ $BACKUP == "true" ]] && {
 	BACKUPFILE="${OUTDB}${BACKUP_EXT}"
 	[[ -e "$BACKUPFILE" ]] && {
@@ -266,8 +409,11 @@ shift $(($OPTIND - 1))
 	}
 }
 
-# create lookup table from canonical_addresses (destination database) containing
-# _id address and stripped down phone numbers in international format
+# Check if FIFO directory can be used
+fifodir "$FIFODIR"
+
+# Create lookup table from canonical_addresses (destination database) containing
+# _id, address and stripped down phone numbers in international format
 # (separators removed)
 OUTDBFIFO=${FIFODIR}"/outdb.fifo"
 [[ -e "$OUTDBFIFO" ]] || mkfifo "$OUTDBFIFO"
@@ -290,7 +436,7 @@ for ((i = 0; i < LUT_COUNT; i++))
 		echo -e "LuT ID: ${LUT_ID[$i]} \t Stripped Address: ${LUT_ADDRESS_STRIPPED[$i]}"
 	done
 
-# query source database, cycle through entries
+# Query source database, cycle through entries
 INDBFIFO=${FIFODIR}"/indb.fifo"
 [[ -e "$INDBFIFO" ]] || mkfifo "$INDBFIFO"
 
@@ -299,22 +445,23 @@ QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
 
 while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 	do
-# convert CANONICALADDRESS to international format
+# Convert CANONICALADDRESS to international format
 		CAN_ADDR_STRIPPED=$(internationalized $(stripped "$CANONICALADDRESS"))
 		INT_NUM=$(internationalnumber "$CAN_ADDR_STRIPPED")
 
-# search through LUT_ADDRESS_STRIPPED for this address
+# Search through LUT_ADDRESS_STRIPPED for this address
 		for ((i = 0; i < LUT_COUNT; i++))
 			do
 				RET=$(matchaddr "$CAN_ADDR_STRIPPED" "${LUT_ADDRESS_STRIPPED[$i]}" "$INT_NUM")
-# on match, add entry to translation table, continue with next entry
+# On match, add entry to translation table, continue with next entry
 				[[ "$RET" == 'true' ]] && {
 					TTBL_ID["$CANONICALID"]=${LUT_ID[$i]}
 					echo "_id $CANONICALID ($CANONICALADDRESS) from infile matches _id ${LUT_ID[$i]} (${LUT_ADDRESS[$i]}) from outfile"
 					continue 2
 				}
 			done
-# no match: add address (in international format, if it is a phone number) to
+
+# No match: add address (in international format, if it is a phone number) to
 # destination database
 		echo "_id $CANONICALID ($CANONICALADDRESS) did not match any entry in outfile"
 		if [[ "$INT_NUM" == 'true' ]]
@@ -326,9 +473,12 @@ while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 
 		QUERY="INSERT INTO canonical_addresses (address) VALUES ('${NEW_ADDR}');"
 		"$SQLITEBIN" "$OUTDB" "$QUERY"
-# query the destination database for the _id of this new entry and add a new
+
+# Query the destination database for the _id of this new entry and add a new
 # entry to the lookup table
-		QUERY="SELECT _id FROM canonical_addresses WHERE address='${NEW_ADDR}';"
+		QUERY="SELECT _id \
+		       FROM canonical_addresses \
+		       WHERE address='${NEW_ADDR}';"
 		LUT_ID["$LUT_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
 		LUT_ADDRESS["$LUT_COUNT"]=$NEW_ADDR
 		LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$CAN_ADDR_STRIPPED
@@ -337,7 +487,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
 		((LUT_COUNT++))
 done < "$INDBFIFO"
 
-# get a local copy of table threads of destination database
+# Get a local copy of table threads of destination database
 THREAD_COUNT=0
 QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
 	      read, type, error, has_attachment \
@@ -362,13 +512,13 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		((THREAD_COUNT++))
 	done < "$OUTDBFIFO"
 
-# dump content of threads table for debugging
+# Dump content of threads table for debugging
 for ((i = 0; i < THREAD_COUNT; i++))
 	do
 		echo -e "TID: ${THREAD_ID[$i]} TDate: ${THREAD_DATE[$i]} TRead: ${THREAD_READ[$i]} TSnippet: ${THREAD_SNIPPET[$i]:0:10} TRID: ${THREAD_RID[$i]} TMembers: $(wordcount ${THREAD_RID[$i]})"
 	done
 
-# compare entries of table threads of source database and add them to
+# Compare entries of table threads of source database and add them to
 # destination database if needed
 echo "Processing threads from source database"
 QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
@@ -386,7 +536,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		TR_RID=$(sortwords "$TR_RID")
 		for ((i = 0; i < THREAD_COUNT; i++))
 			do
-# make sure to have the same amount of members before looking closer into it
+# Make sure to have the same amount of members before looking closer into it
 				[[ $IN_THREAD_NUM_MEMBERS -eq ${THREAD_NUM_MEMBERS[$i]} ]] && {
 					[[ "$TR_RID" == $(sortwords "${THREAD_RID[$i]}") ]] && {
 						TTBL_TID["$T_ID"]=${THREAD_ID[$i]}
@@ -396,7 +546,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 					}
 			done
 
-# no thread match: copy entry to destination database
+# No thread match: copy entry to destination database
 		Q_DATE=$(sqlquote "$T_DATE")
 		Q_MCOUNT=0 # a trigger will update this on every insert
 		Q_RID=$(sqlquote "$TR_RID")
@@ -414,7 +564,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 			       '${Q_TYPE}', '${Q_ERROR}', '${Q_HASATTACHMENT}');"
 		"$SQLITEBIN" "$OUTDB" "$QUERY"
 
-# query the destination database for the thread_id of this new entry and add it
+# Query the destination database for the thread_id of this new entry and add it
 # to the lookup table
 		QUERY="SELECT _id FROM threads WHERE recipient_ids='${Q_RID}';"
 		THREAD_ID["$THREAD_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
@@ -434,7 +584,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T
 		((THREAD_COUNT++))
 	done < "$INDBFIFO"
 
-# read and process all messages from source database
+# Read and process all messages from source database
 QUERY="SELECT thread_id, address, person, date, protocol, read, status, type, \
 	      reply_path_present, subject, body, service_center, locked, \
 	      error_code, seen \
@@ -452,7 +602,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROT
 			continue
 		}
 
-# add entry to table sms
+# Add entry to table sms
 		echo "-------------------------------------"
 		OUT_TID=${TTBL_TID["$S_TID"]}
 		Q_TID=$(sqlquote "$OUT_TID")
@@ -486,7 +636,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROT
 		"$SQLITEBIN" "$OUTDB" "$QUERY"
 
 		ENTRY=${THREAD_LUT[$OUT_TID]}
-# if sms date is lower than thread date, write back current thread entry
+# If sms date is lower than thread date, write back current thread entry
 		if [[ ${THREAD_DATE["$ENTRY"]} -ge $((S_DATE + DATE_ADJUST)) ]]
 			then
 				Q_TDATE=$(sqlquote "${THREAD_DATE[$ENTRY]}")
@@ -508,7 +658,7 @@ while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROT
 				       WHERE _id='${Q_TID}';"
 				"$SQLITEBIN" "$OUTDB" "$QUERY"
 			else
-# otherwise overwrite thread date and read in new thread content
+# Otherwise overwrite thread date and read in new thread content
 				OLD_THREAD_DATE=${THREAD_DATE["$ENTRY"]}
                                QUERY="UPDATE threads \
                                       SET date='${Q_DATE}' \
@@ -540,10 +690,10 @@ while IFS='|' read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROT
 						echo -e "Destination Thread date $OLD_THREAD_DATE is older than adjusted message date $((S_DATE + DATE_ADJUST)), reading in snippet '${T_SNIPPET:0:10}'"
 					done < "$OUTDBFIFO"
 			fi
-# next entry of source database
+# Next entry of source database
 	done < "$INDBFIFO"
 
 echo "Merging done, cleaning up."
 
-# clean up
+# Clean up
 rm "$INDBFIFO" "$OUTDBFIFO"
