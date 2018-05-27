@@ -1,5 +1,38 @@
 #!/bin/bash
 
+# Android Message Merger
+#
+# This script helps to merge message threads, containing SMS and MMS, from an
+# existing Android mmssms.db database into another such database.
+#
+# (c) 2018 Hartmut Knaack
+#
+# Tested Android versions:
+#	Android 2.3 (source database)
+#	Android 4.2.2 (source and destination database)
+#
+# Required software:
+#	Bash (tested on 4.3.30)
+#	SQlite (version 3.8.8 or newer)
+#
+# Recommended procedure:
+# 1. Backup your phone data (preferably Nandroid)!
+# 2. Restart your phone and make sure it will not connect to your phone network
+#    (put into airplane mode or remove SIM card).
+# 3. Copy your phones mmssms.db file (for example with adb pull from
+#    /data/data/com.android.providers.telephony/databases/).
+# 4. Do a dry run of this script to check if it recognizes your phone numbers
+#    correctly. Use the -p and -r options to adjust the country prefix.
+# 5. Run the script to merge your message threads from the source database into
+#    the destination database.
+# 6. Rename the mmssms.db file on your phone (mv mmssms.db mmssms.db.bak).
+# 7. Copy the merged mmssms.db file back to your phone (for example with
+#    adb push).
+# 8. Adjust owner (chown radio:radio mmssms.db) and permission
+#    (chmod 660 mmssms.db).
+# 9. Reboot your phone.
+# 10.Start message app
+
 PROGNAME="$0"
 BASENAME=$(basename ${PROGNAME})
 INDB=
