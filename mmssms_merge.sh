@@ -33,6 +33,7 @@
 # 9. Reboot your phone.
 # 10.Start message app
 
+# Global variables
 PROGNAME="$0"
 BASENAME=$(basename ${PROGNAME})
 INDB=
@@ -47,6 +48,42 @@ LINESEPARATOR=$'\f'
 PREFIX_PATTERN=
 PREFIX_REPLACE=
 DATE_ADJUST=3000
+
+# Variables for the look-up table, which is built from the "canonical_addresses"
+# table of the destination database and appended by entries of the source
+# database, which do not exist in the destination database.
+LUT_COUNT=0			# number of entries in look-up table
+declare -a LUT_ID		# entries of _id coloumn
+declare -a LUT_ADDRESS		# entries of address coloumn
+declare -a LUT_ADDRESS_STRIPPED	# stripped down entries of address coloumn
+
+# Variables for the translation tables
+declare -a TTBL_ID		# translates the canonical_addresses _id of the
+				# destination database the canonical_addresses
+				# _id of the source database as index
+declare -a TTBL_TID		# translates the thread-IDs by storing the
+				# thread-ID of the destination database by using
+				# the thread-ID of the source database as index
+
+# Variables for the thread table hold in memory, which is built from the
+# "threads" table of the destination database and appended by entries of the
+# source database, which do not exist in the destination database.
+THREAD_COUNT=0			# number of entries in threads table
+declare -a THREAD_ID		# entries in _id coloumn
+declare -a THREAD_DATE		# entries in date coloumn
+declare -a THREAD_MCOUNT	# entries in message_count coloumn
+declare -a THREAD_RID		# entries in recipient_ids coloumn
+declare -a THREAD_SNIPPET	# entries in snippet coloumn
+declare -a THREAD_SNIPPETCS	# entries in snippet_cs coloumn
+declare -a THREAD_READ		# entries in read coloumn
+declare -a THREAD_TYPE		# entries in type coloumn
+declare -a THREAD_ERROR		# entries in error coloumn
+declare -a THREAD_HASATTACHMENT	# entries in has_attachment coloumn
+declare -a THREAD_NUM_MEMBERS	# amount of members in that thread
+
+declare -a THREAD_LUT		# look-up table, which contains the indexes of
+				# the in memory thread table, using the
+				# thread-ID as index
 
 # Print usage information of the script
 #
@@ -671,7 +708,6 @@ fifodir "$FIFODIR"
 OUTDBFIFO=${FIFODIR}"/outdb.fifo"
 create_fifo "$OUTDBFIFO"
 
-LUT_COUNT=0
 QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
 "$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
 
@@ -748,7 +784,6 @@ done < "$INDBFIFO"
 }
 
 # Get a local copy of table threads of destination database
-THREAD_COUNT=0
 QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
 	      read, type, error, has_attachment \
        FROM threads \
