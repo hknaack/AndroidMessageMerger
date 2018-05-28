@@ -41,6 +41,8 @@ OUTDB=
 BACKUP="true"
 BACKUP_EXT=".bak"
 DRYRUN="false"
+CMP="cmp"
+CMP_OPTS="-s"
 SQLITEBIN="sqlite3"
 FIFODIR="/tmp"
 COLSEPARATOR='|'
@@ -268,6 +270,27 @@ outfile() {
 cleanup (){
 	[[ -p "$INDBFIFO" ]] && rm "$INDBFIFO"
 	[[ -p "$OUTDBFIFO" ]] && rm "$OUTDBFIFO"
+}
+
+# Backup the destination database
+#
+# Usage:	backup_db
+#
+# returns:	0 on success, otherwise exits with code 1 and an error message
+#		is sent to stderr.
+
+backup_db () {
+	local backupfile="${OUTDB}${BACKUP_EXT}"
+
+	[[ -e "$backupfile" ]] && {
+		echo_err "Error: backup file $backupfile already exists, can not backup"
+		exit 1
+	}
+	cp "$OUTDB" "$backupfile"
+	$("$CMP" "$CMP_OPTS" "$OUTDB" "$backupfile") || {
+		echo_err "Error: Difference between $OUTDB and its backup $backupfile"
+		exit 1
+	}
 }
 
 # Assemble a wildcard WHERE-string from a list of coloumns and a string of
@@ -681,18 +704,7 @@ shift $(($OPTIND - 1))
    ( -z $PREFIX_PATTERN && -n $PREFIX_REPLACE)]] && usage
 
 # Backup destination database, unless disabled
-[[ $BACKUP == "true" ]] && {
-	BACKUPFILE="${OUTDB}${BACKUP_EXT}"
-	[[ -e "$BACKUPFILE" ]] && {
-		echo_err "Error: backup file $BACKUPFILE already exists, can not backup"
-		exit 1
-	}
-	cp "$OUTDB" "$BACKUPFILE"
-	$(cmp -s "$OUTDB" "$BACKUPFILE") || {
-		echo_err "Error: Difference between $OUTDB and its backup $BACKUPFILE"
-		exit 1
-	}
-}
+[[ $BACKUP == "true" ]] && backup_db
 
 # Check if selected coloumn separator and line separator are unused in database
 # entries.
