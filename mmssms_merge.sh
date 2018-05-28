@@ -449,6 +449,30 @@ check_db_separators () {
 	return 0
 }
 
+# Create lookup table from canonical_addresses (destination database) containing
+# _id, address and stripped down phone numbers in international format
+# (separators removed).
+#
+# Usage:	create_lut
+#
+# returns:	code 0 on success, otherwise any error code
+# global vars:	LUT_ID[], LUT_ADDRESS[], LUT_ADDRESS_STRIPPED[], LUT_COUNT
+
+create_lut () {
+	local id address
+	local query="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
+
+	"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$OUTDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" id address
+		do
+			LUT_ID["$LUT_COUNT"]=$id
+			LUT_ADDRESS["$LUT_COUNT"]=$address
+			LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$(internationalized $(stripped "$address"))
+			((LUT_COUNT++))
+		done < "$OUTDBFIFO"
+}
+
 # Set the DATE_ADJUST value
 #
 # Usage:	set_dateadjust "$number"
@@ -714,22 +738,11 @@ check_db_separators "$OUTDB"
 # Check if FIFO directory can be used
 fifodir "$FIFODIR"
 
-# Create lookup table from canonical_addresses (destination database) containing
-# _id, address and stripped down phone numbers in international format
-# (separators removed)
 OUTDBFIFO=${FIFODIR}"/outdb.fifo"
 create_fifo "$OUTDBFIFO"
 
-QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
-"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
-
-while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
-	do
-		LUT_ID["$LUT_COUNT"]=$CANONICALID
-		LUT_ADDRESS["$LUT_COUNT"]=$CANONICALADDRESS
-		LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$(internationalized $(stripped "$CANONICALADDRESS"))
-		((LUT_COUNT++))
-	done < "$OUTDBFIFO"
+# Create lookup table from canonical_addresses
+create_lut
 
 # Dump content of lookup table for debugging
 for ((i = 0; i < LUT_COUNT; i++))
