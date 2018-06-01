@@ -473,6 +473,22 @@ create_lut () {
 		done < "$OUTDBFIFO"
 }
 
+# Dump IDs and stripped addresses from the lookup table of canonical adddresses.
+#
+# Usage:	dump_lut
+#
+# returns:	Code 0 on success, otherwise any error code. Outputs canonical
+#		ID and stripped addresses on stdout.
+
+dump_lut () {
+	local i
+
+	for ((i = 0; i < LUT_COUNT; i++))
+		do
+			echo -e "LuT ID: ${LUT_ID[$i]} \t Stripped Address: ${LUT_ADDRESS_STRIPPED[$i]}"
+		done
+}
+
 # Set the DATE_ADJUST value
 #
 # Usage:	set_dateadjust "$number"
@@ -745,10 +761,7 @@ create_fifo "$OUTDBFIFO"
 create_lut
 
 # Dump content of lookup table for debugging
-for ((i = 0; i < LUT_COUNT; i++))
-	do
-		echo -e "LuT ID: ${LUT_ID[$i]} \t Stripped Address: ${LUT_ADDRESS_STRIPPED[$i]}"
-	done
+dump_lut
 
 # Query source database, cycle through entries
 INDBFIFO=${FIFODIR}"/indb.fifo"
