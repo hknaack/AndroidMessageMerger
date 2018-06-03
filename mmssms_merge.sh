@@ -575,6 +575,45 @@ sync_src_addresses () {
 		done < "$INDBFIFO"
 }
 
+# Create thread table in memory from the destination database
+#
+# Usage:	create_thread_table
+#
+# returns:	Code 0 on success, otherwise any error code.
+#
+# global vars:	THREAD_ID[], THREAD_DATE[], THREAD_MCOUNT[], THREAD_RID[],
+#		THREAD_SNIPPET[], THREAD_SNIPPETCS[], THREAD_READ[],
+#		THREAD_TYPE[], THREAD_ERROR[], THREAD_HASATTACHMENT[],
+#		THREAD_NUM_MEMBERS[], THREAD_LUT[], THREAD_COUNT
+
+create_thread_table () {
+	local query id date mcount rid snippet snippetcs read type error
+	local has_attachment
+
+	query="SELECT _id, date, message_count, recipient_ids, snippet, \
+	       snippet_cs, read, type, error, has_attachment \
+	       FROM threads \
+	       ORDER BY _id ASC;"
+	"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$OUTDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" id date mcount rid snippet snippetcs read type error has_attachment
+		do
+		THREAD_ID["$THREAD_COUNT"]=$id
+		THREAD_DATE["$THREAD_COUNT"]=$date
+		THREAD_MCOUNT["$THREAD_COUNT"]=$mcount
+		THREAD_RID["$THREAD_COUNT"]=$rid
+		THREAD_SNIPPET["$THREAD_COUNT"]=$snippet
+		THREAD_SNIPPETCS["$THREAD_COUNT"]=$snippetcs
+		THREAD_READ["$THREAD_COUNT"]=$read
+		THREAD_TYPE["$THREAD_COUNT"]=$type
+		THREAD_ERROR["$THREAD_COUNT"]=$error
+		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$has_attachment
+		THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$(wordcount "$rid")
+		THREAD_LUT["$id"]="$THREAD_COUNT"
+		((THREAD_COUNT++))
+	done < "$OUTDBFIFO"
+}
+
 # Dump IDs and stripped addresses from the lookup table of canonical adddresses.
 #
 # Usage:	dump_lut
@@ -877,28 +916,7 @@ sync_src_addresses
 }
 
 # Get a local copy of table threads of destination database
-QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
-	      read, type, error, has_attachment \
-       FROM threads \
-       ORDER BY _id ASC;"
-"$SQLITEBIN" "$OUTDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
-
-while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
-	do
-		THREAD_ID["$THREAD_COUNT"]=$T_ID
-		THREAD_DATE["$THREAD_COUNT"]=$T_DATE
-		THREAD_MCOUNT["$THREAD_COUNT"]=$T_MCOUNT
-		THREAD_RID["$THREAD_COUNT"]=$T_RID
-		THREAD_SNIPPET["$THREAD_COUNT"]=$T_SNIPPET
-		THREAD_SNIPPETCS["$THREAD_COUNT"]=$T_SNIPPETCS
-		THREAD_READ["$THREAD_COUNT"]=$T_READ
-		THREAD_TYPE["$THREAD_COUNT"]=$T_TYPE
-		THREAD_ERROR["$THREAD_COUNT"]=$T_ERROR
-		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$T_HASATTACHMENT
-		THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$(wordcount "$T_RID")
-		THREAD_LUT["$T_ID"]="$THREAD_COUNT"
-		((THREAD_COUNT++))
-	done < "$OUTDBFIFO"
+create_thread_table
 
 # Dump content of threads table for debugging
 for ((i = 0; i < THREAD_COUNT; i++))
