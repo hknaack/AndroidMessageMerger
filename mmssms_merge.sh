@@ -630,6 +630,22 @@ dump_lut () {
 		done
 }
 
+# Dump content of threads table
+#
+# Usage:	dump_threads
+#
+# returns:	Code 0 on success, otherwise any error code. Outputs thread
+#		content on stdout.
+
+dump_threads () {
+	local i
+
+	for ((i = 0; i < THREAD_COUNT; i++))
+		do
+			echo -e "TID: ${THREAD_ID[$i]} TDate: ${THREAD_DATE[$i]} TRead: ${THREAD_READ[$i]} TSnippet: ${THREAD_SNIPPET[$i]:0:10} TRID: ${THREAD_RID[$i]} TMembers: $(wordcount ${THREAD_RID[$i]})"
+		done
+}
+
 # Set the DATE_ADJUST value
 #
 # Usage:	set_dateadjust "$number"
@@ -919,10 +935,7 @@ sync_src_addresses
 create_thread_table
 
 # Dump content of threads table for debugging
-for ((i = 0; i < THREAD_COUNT; i++))
-	do
-		echo -e "TID: ${THREAD_ID[$i]} TDate: ${THREAD_DATE[$i]} TRead: ${THREAD_READ[$i]} TSnippet: ${THREAD_SNIPPET[$i]:0:10} TRID: ${THREAD_RID[$i]} TMembers: $(wordcount ${THREAD_RID[$i]})"
-	done
+dump_threads
 
 # Compare entries of table threads of source database and add them to
 # destination database if needed
