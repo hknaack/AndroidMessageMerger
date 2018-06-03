@@ -473,6 +473,108 @@ create_lut () {
 		done < "$OUTDBFIFO"
 }
 
+# Add entry to destination database and update the lookup table.
+#
+# Usage:	add_dest_address "$address" "$can_addr_stripped" "$canonicalid"
+#
+# $address:	canonical address to be added to destination database
+# $can_addr_stripped:	stripped canonical address to be added to lookup table
+# $canonicalid:	source canonical ID of the entry
+#
+# returns:	code 0 on success, otherwise any error code
+# global vars:	LUT_ID[], LUT_ADDRESS[], LUT_ADDRESS_STRIPPED[], LUT_COUNT,
+#		TTBL_ID
+
+add_dest_address () {
+	local new_addr=$1
+	local can_addr_stripped=$2
+	local canonicalid=$3
+	local query
+
+	query="INSERT INTO canonical_addresses (address) VALUES ('${new_addr}');"
+	"$SQLITEBIN" "$OUTDB" "$query"
+
+# Query the destination database for the _id of this new entry and add a new
+# entry to the lookup table
+	query="SELECT _id FROM canonical_addresses WHERE address='${new_addr}';"
+	LUT_ID["$LUT_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$query")
+	LUT_ADDRESS["$LUT_COUNT"]=$new_addr
+	LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$can_addr_stripped
+	TTBL_ID["$canonicalid"]=${LUT_ID[$LUT_COUNT]}
+	echo "address $new_addr was added to outfile, its new _id is ${LUT_ID[$LUT_COUNT]}"
+	((LUT_COUNT++))
+}
+
+# Synchronize entry of the source database with existing entries in the lookup
+# table by populating a translation table.
+#
+# Usage:	sync_address "$canonicalid" "$address"
+#
+# $canonicalid:	source canonical ID of the entry
+# $address:	canonical address to be added to destination database
+#
+# returns:	code 0 if the destination database has not been changed,
+#		otherwise code 1
+#
+# global vars:	LUT_ID[], LUT_ADDRESS_STRIPPED[], LUT_COUNT, TTBL_ID[]
+
+sync_address () {
+	local canonicalid=$1
+	local canonicaladdress=$2
+	local can_addr_stripped int_num i ret
+
+# Convert canonical address to international format
+	can_addr_stripped=$(internationalized $(stripped "$canonicaladdress"))
+	int_num=$(internationalnumber "$can_addr_stripped")
+
+# Search through LUT_ADDRESS_STRIPPED for this address
+	for ((i = 0; i < LUT_COUNT; i++))
+		do
+			ret=$(matchaddr "$can_addr_stripped" "${LUT_ADDRESS_STRIPPED[$i]}" "$int_num")
+# On match, add entry to translation table, continue with next entry
+			[[ "$ret" == 'true' ]] && {
+				TTBL_ID["$canonicalid"]=${LUT_ID[$i]}
+				echo "_id $canonicalid ($canonicaladdress) from infile matches _id ${LUT_ID[$i]} (${LUT_ADDRESS[$i]}) from outfile"
+				return 0
+			}
+		done
+
+# No match: add address (in international format, if it is a phone number) to
+# destination database
+	echo "_id $canonicalid ($canonicaladdress) did not match any entry in outfile"
+	if [[ "$int_num" == 'true' ]]
+		then
+			new_addr=$(sqlquote "$can_addr_stripped")
+		else
+			new_addr=$(sqlquote "$canonicaladdress")
+	fi
+
+	[[ "$DRYRUN" == 'true' ]] && return 0
+
+	add_dest_address "$new_addr" "$can_addr_stripped" "$canonicalid"
+	return 1
+}
+
+# Synchronize entries of the source database with existing entries in the lookup
+# table by populating a translation table. Non-existing entries will be added to
+# both, the lookup table and (unless doing a dry-run) the destination database.
+#
+# Usage:	sync_src_addresses
+#
+# returns:	code 0 on success, otherwise any error code
+
+sync_src_addresses () {
+	local query canonicalid canonicaladdress
+
+	query="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
+	"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$INDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" canonicalid canonicaladdress
+		do
+			sync_address "$canonicalid" "$canonicaladdress"
+		done < "$INDBFIFO"
+}
+
 # Dump IDs and stripped addresses from the lookup table of canonical adddresses.
 #
 # Usage:	dump_lut
@@ -767,54 +869,7 @@ dump_lut
 INDBFIFO=${FIFODIR}"/indb.fifo"
 create_fifo "$INDBFIFO"
 
-QUERY="SELECT _id, address FROM canonical_addresses ORDER BY _id;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
-
-while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" CANONICALID CANONICALADDRESS
-	do
-# Convert CANONICALADDRESS to international format
-		CAN_ADDR_STRIPPED=$(internationalized $(stripped "$CANONICALADDRESS"))
-		INT_NUM=$(internationalnumber "$CAN_ADDR_STRIPPED")
-
-# Search through LUT_ADDRESS_STRIPPED for this address
-		for ((i = 0; i < LUT_COUNT; i++))
-			do
-				RET=$(matchaddr "$CAN_ADDR_STRIPPED" "${LUT_ADDRESS_STRIPPED[$i]}" "$INT_NUM")
-# On match, add entry to translation table, continue with next entry
-				[[ "$RET" == 'true' ]] && {
-					TTBL_ID["$CANONICALID"]=${LUT_ID[$i]}
-					echo "_id $CANONICALID ($CANONICALADDRESS) from infile matches _id ${LUT_ID[$i]} (${LUT_ADDRESS[$i]}) from outfile"
-					continue 2
-				}
-			done
-
-# No match: add address (in international format, if it is a phone number) to
-# destination database
-		echo "_id $CANONICALID ($CANONICALADDRESS) did not match any entry in outfile"
-		if [[ "$INT_NUM" == 'true' ]]
-			then
-				NEW_ADDR=$(sqlquote "$CAN_ADDR_STRIPPED")
-			else
-				NEW_ADDR=$(sqlquote "$CANONICALADDRESS")
-		fi
-
-		[[ "$DRYRUN" == 'false' ]] && {
-			QUERY="INSERT INTO canonical_addresses (address) VALUES ('${NEW_ADDR}');"
-			"$SQLITEBIN" "$OUTDB" "$QUERY"
-
-# Query the destination database for the _id of this new entry and add a new
-# entry to the lookup table
-			QUERY="SELECT _id \
-			       FROM canonical_addresses \
-			       WHERE address='${NEW_ADDR}';"
-			LUT_ID["$LUT_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
-			LUT_ADDRESS["$LUT_COUNT"]=$NEW_ADDR
-			LUT_ADDRESS_STRIPPED["$LUT_COUNT"]=$CAN_ADDR_STRIPPED
-			TTBL_ID["$CANONICALID"]=${LUT_ID[$LUT_COUNT]}
-			echo "address $NEW_ADDR was added to outfile, its new _id is ${LUT_ID[$LUT_COUNT]}"
-			((LUT_COUNT++))
-		}
-done < "$INDBFIFO"
+sync_src_addresses
 
 [[ "$DRYRUN" == 'true' ]] && {
 	cleanup
