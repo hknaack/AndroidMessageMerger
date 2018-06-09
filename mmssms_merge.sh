@@ -614,6 +614,136 @@ create_thread_table () {
 	done < "$OUTDBFIFO"
 }
 
+# Find a matching thread, which contains the same (translated) recipient IDs as
+# the existing thread from the destination database
+#
+# Usage:	match_threads "$id" "$num" "$rid"
+#
+# $id:		source thread ID
+# $num:		number of recipient IDs of the source thread
+# $rid:		string of already translated and sorted recipient IDs of the
+#		source thread
+#
+# returns:	Code 0 if a matching thread has been found, otherwise 1. Also
+#		outputs, which thread matches and which recipient IDs are found.
+#
+# global vars:	TTBL_TID[]
+
+match_threads () {
+	local i
+	local id=$1
+	local num_members=$2
+	local rid=$3
+
+	for ((i = 0; i < THREAD_COUNT; i++))
+		do
+# Make sure to have the same amount of members before looking closer into it
+			[[ $num_members -eq ${THREAD_NUM_MEMBERS[$i]} ]] && {
+				[[ "$rid" == $(sortwords "${THREAD_RID[$i]}") ]] && {
+					TTBL_TID["$id"]=${THREAD_ID[$i]}
+					echo -e "Thread matches with ${THREAD_ID[$i]} because source recipient_ids '${rid}' match destinations '${THREAD_RID[$i]}'"
+					return 0
+					}
+				}
+		done
+
+	return 1
+}
+
+# Add a new thread to the destination database
+#
+# Usage:	add_dest_thread "$date" "$rid" "$snippet" "$snippet_cs" "$read" "$type" "$error" "$has_attachment"
+#
+# $date:	date of latest thread entry (Unix time)
+# $rid:		string of recipient IDs
+# $snippet:	string of thread snippet (body of latest entry)
+# $snippet_cs:	string of thread snippet_cs
+# $read:	integer indicating read status of the thread
+# $type:	integer indicating the type of the thread
+# $error:	integer error code of the thread
+# $has_attachment: integer indicating attachments of the thread
+#
+# returns:	Code 0 on success, otherwise any error code
+
+add_dest_thread () {
+	local date=$(sqlquote "$1")
+	local mcount=0 # a trigger will update this on every insert
+	local rid=$(sqlquote "$2")
+	local snippet=$(sqlquote "$3")
+	local snippet_cs=$(sqlquote "$4")
+	local read=$(sqlquote "$5")
+	local type=$(sqlquote "$6")
+	local error=$(sqlquote "$7")
+	local has_attachment=$(sqlquote "$8")
+	local query
+
+	query="INSERT INTO threads (date, message_count, recipient_ids, \
+				    snippet, snippet_cs, read, type, error, \
+				    has_attachment) \
+	       VALUES ('${date}', '${mcount}', '${rid}', '${snippet}', \
+		       '${snippetcs}', '${read}', '${type}', '${error}', \
+		       '${has_attachment}');"
+
+	"$SQLITEBIN" "$OUTDB" "$query"
+}
+
+# Synchonize threads from the source database with threads from the destination
+# database
+#
+# Usage:	sync_src_threads
+#
+# returns:	Code 0 on success, otherwise any error code
+#
+# global vars:	THREAD_ID[], THREAD_DATE[], THREAD_MCOUNT[], THREAD_RID[],
+#		THREAD_SNIPPET[], THREAD_SNIPPETCS[], THREAD_READ[],
+#		THREAD_TYPE[], THREAD_ERROR[], THREAD_HASATTACHMENT[],
+#		THREAD_NUM_MEMBERS[], THREAD_LUT[], TTBL_ID[], THREAD_COUNT
+
+sync_src_threads () {
+	local query id date mcount rid snippet snippetcs read type error
+	local has_attachment num_members tr_rid q_rid
+
+	query="SELECT _id, date, message_count, recipient_ids, snippet, \
+	       snippet_cs, read, type, error, has_attachment \
+	       FROM threads \
+	       ORDER BY _id ASC;"
+	"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$INDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" id date mcount rid snippet snippetcs read type error has_attachment
+		do
+			echo "-------------------------"
+			num_members=$(wordcount "$rid")
+			echo -e "TID: $id TDate: $date TRead: $read TSnippet: ${snippet:0:10} TRID: $rid TMembers: $num_members"
+			tr_rid=$(translate_cids "$rid")
+			tr_rid=$(sortwords "$tr_rid")
+
+			match_threads "$id" "$num_members" "$tr_rid" && continue
+
+# No thread match: copy entry to destination database
+			add_dest_thread "$date" "$tr_rid" "$snippet" "$snippetcs" "$read" "$type" "$error" "$has_attachment"
+
+# Query the destination database for the thread_id of this new entry and add it
+# to the lookup table
+			q_rid=$(sqlquote "$tr_rid")
+			query="SELECT _id FROM threads WHERE recipient_ids='${q_rid}';"
+			THREAD_ID["$THREAD_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$query")
+			TTBL_TID["$id"]=${THREAD_ID["$THREAD_COUNT"]}
+			THREAD_DATE["$THREAD_COUNT"]=$date
+			THREAD_MCOUNT["$THREAD_COUNT"]=$mcount # set to zero for starters or keep for reference?
+			THREAD_RID["$THREAD_COUNT"]=$rid
+			THREAD_SNIPPET["$THREAD_COUNT"]=$snippet
+			THREAD_SNIPPETCS["$THREAD_COUNT"]=$snippetcs
+			THREAD_READ["$THREAD_COUNT"]=$read
+			THREAD_TYPE["$THREAD_COUNT"]=$type
+			THREAD_ERROR["$THREAD_COUNT"]=$error
+			THREAD_HASATTACHMENT["$THREAD_COUNT"]=$has_attachment
+			THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$num_members
+			THREAD_LUT["${THREAD_ID[$THREAD_COUNT]}"]=$THREAD_COUNT
+			echo -e "no thread match found, adding to destination: TID: ${THREAD_ID[$THREAD_COUNT]} TDate: ${THREAD_DATE[$THREAD_COUNT]} TRead: ${THREAD_READ[$THREAD_COUNT]} TSnippet: ${THREAD_SNIPPET[$THREAD_COUNT]:0:10} TRID: ${THREAD_RID[$THREAD_COUNT]} TMembers: $(wordcount ${THREAD_RID[$THREAD_COUNT]})"
+			((THREAD_COUNT++))
+		done < "$INDBFIFO"
+}
+
 # Dump IDs and stripped addresses from the lookup table of canonical adddresses.
 #
 # Usage:	dump_lut
@@ -940,68 +1070,7 @@ dump_threads
 # Compare entries of table threads of source database and add them to
 # destination database if needed
 echo "Processing threads from source database"
-QUERY="SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs, \
-	      read, type, error, has_attachment \
-       FROM threads \
-       ORDER BY _id ASC;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
-
-while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_ID T_DATE T_MCOUNT T_RID T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
-	do
-		echo "-------------------------"
-		IN_THREAD_NUM_MEMBERS=$(wordcount "$T_RID")
-		echo -e "TID: $T_ID TDate: $T_DATE TRead: $T_READ TSnippet: ${T_SNIPPET:0:10} TRID: $T_RID TMembers: $IN_THREAD_NUM_MEMBERS"
-		TR_RID=$(translate_cids "$T_RID")
-		TR_RID=$(sortwords "$TR_RID")
-		for ((i = 0; i < THREAD_COUNT; i++))
-			do
-# Make sure to have the same amount of members before looking closer into it
-				[[ $IN_THREAD_NUM_MEMBERS -eq ${THREAD_NUM_MEMBERS[$i]} ]] && {
-					[[ "$TR_RID" == $(sortwords "${THREAD_RID[$i]}") ]] && {
-						TTBL_TID["$T_ID"]=${THREAD_ID[$i]}
-						echo -e "Thread matches with ${THREAD_ID[$i]} because source recipient_ids '${T_RID}' match destinations '${THREAD_RID[$i]}'"
-						continue 2
-						}
-					}
-			done
-
-# No thread match: copy entry to destination database
-		Q_DATE=$(sqlquote "$T_DATE")
-		Q_MCOUNT=0 # a trigger will update this on every insert
-		Q_RID=$(sqlquote "$TR_RID")
-		Q_SNIPPET=$(sqlquote "$T_SNIPPET")
-		Q_SNIPPETCS=$(sqlquote "$T_SNIPPETCS")
-		Q_READ=$(sqlquote "$T_READ")
-		Q_TYPE=$(sqlquote "$T_TYPE")
-		Q_ERROR=$(sqlquote "$T_ERROR")
-		Q_HASATTACHMENT=$(sqlquote "$T_HASATTACHMENT")
-		QUERY="INSERT INTO threads (date, message_count, recipient_ids, \
-					    snippet, snippet_cs, read, type, \
-					    error, has_attachment) \
-		       VALUES ('${Q_DATE}', '${Q_MCOUNT}', '${Q_RID}', \
-			       '${Q_SNIPPET}', '${Q_SNIPPETCS}', '${Q_READ}', \
-			       '${Q_TYPE}', '${Q_ERROR}', '${Q_HASATTACHMENT}');"
-		"$SQLITEBIN" "$OUTDB" "$QUERY"
-
-# Query the destination database for the thread_id of this new entry and add it
-# to the lookup table
-		QUERY="SELECT _id FROM threads WHERE recipient_ids='${Q_RID}';"
-		THREAD_ID["$THREAD_COUNT"]=$("$SQLITEBIN" "$OUTDB" "$QUERY")
-		TTBL_TID["$T_ID"]=${THREAD_ID["$THREAD_COUNT"]}
-		THREAD_DATE["$THREAD_COUNT"]=$T_DATE
-		THREAD_MCOUNT["$THREAD_COUNT"]=$T_MCOUNT # set to zero for starters or keep for reference?
-		THREAD_RID["$THREAD_COUNT"]=$T_RID
-		THREAD_SNIPPET["$THREAD_COUNT"]=$T_SNIPPET
-		THREAD_SNIPPETCS["$THREAD_COUNT"]=$T_SNIPPETCS
-		THREAD_READ["$THREAD_COUNT"]=$T_READ
-		THREAD_TYPE["$THREAD_COUNT"]=$T_TYPE
-		THREAD_ERROR["$THREAD_COUNT"]=$T_ERROR
-		THREAD_HASATTACHMENT["$THREAD_COUNT"]=$T_HASATTACHMENT
-		THREAD_NUM_MEMBERS["$THREAD_COUNT"]=$IN_THREAD_NUM_MEMBERS
-		THREAD_LUT["${THREAD_ID[$THREAD_COUNT]}"]=$THREAD_COUNT
-		echo -e "no thread match found, adding to destination: TID: ${THREAD_ID[$THREAD_COUNT]} TDate: ${THREAD_DATE[$THREAD_COUNT]} TRead: ${THREAD_READ[$THREAD_COUNT]} TSnippet: ${THREAD_SNIPPET[$THREAD_COUNT]:0:10} TRID: ${THREAD_RID[$THREAD_COUNT]} TMembers: $(wordcount ${THREAD_RID[$THREAD_COUNT]})"
-		((THREAD_COUNT++))
-	done < "$INDBFIFO"
+sync_src_threads
 
 # Read and process all messages from source database
 QUERY="SELECT thread_id, address, person, date, protocol, read, status, type, \
