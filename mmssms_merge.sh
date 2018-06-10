@@ -92,7 +92,7 @@ declare -a THREAD_LUT		# look-up table, which contains the indexes of
 #
 # returns:	exits with error code 1
 
-usage() {
+usage () {
 	cat <<EOF
 Usage:
 	$BASENAME [options]
@@ -148,7 +148,7 @@ echo_err () {
 # returns:	0 if file exists and has got the requested permissions,
 #		otherwise 1 and an error message is sent to stderr.
 
-filecheck() {
+filecheck () {
 	[[ -f "$1" ]] || {
 		echo_err "Error: File $1 does not exist!"
 		return 1
@@ -232,7 +232,7 @@ create_fifo () {
 # returns:	0 if file exists and is readable, otherwise exits with code 1
 #		and an error message is sent to stderr.
 
-infile() {
+infile () {
 	filecheck "$1" "r" || {
 		echo_err "Error: Input file could not be opened!"
 		exit 1
@@ -250,7 +250,7 @@ infile() {
 # returns:	0 if file exists and is readable and writable, otherwise exits
 #		with code 1 and an error message is sent to stderr.
 
-outfile() {
+outfile () {
 	filecheck "$1" "w" || {
 		echo_err "Error: Output file could not be opened!"
 		exit 1
@@ -266,7 +266,7 @@ outfile() {
 #
 # returns:	0 on success
 
-cleanup (){
+cleanup () {
 	[[ -p "$INDBFIFO" ]] && rm "$INDBFIFO"
 	[[ -p "$OUTDBFIFO" ]] && rm "$OUTDBFIFO"
 }
