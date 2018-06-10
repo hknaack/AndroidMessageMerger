@@ -958,6 +958,31 @@ sync_src_threads () {
 		done < "$INDBFIFO"
 }
 
+# Check, if a message with given thread ID, address, date and content already
+# exists in destination database
+#
+# Usage:	check_dest_message "$tid" "$address" "$date" "$body"
+#
+# $tid:		thread ID in the destination database (already SQL quoted)
+# $address:	address of the message (already SQL quoted)
+# $date:	date of the message (already SQL quoted)
+# $body:	content body of the message (already SQL quoted)
+#
+# returns:	Prints amount of messages matching the criteria on stdout.
+
+check_dest_message () {
+	local tid=$1
+	local address=$2
+	local date=$3
+	local body=$4
+	local query="SELECT COUNT(date) \
+		     FROM sms \
+		     WHERE thread_id='${tid}' AND address='${address}' AND \
+			   date='${date}' AND body='${body}';"
+
+	echo $("$SQLITEBIN" "$OUTDB" "$query")
+}
+
 # Add a message to the destination database
 #
 # Usage:	add_dest_message "$tid" "$address" "$person" "$date" "$protocol" "$read" "$status" "$type" "$rpp" "$subject" "$body" "$scenter" "$locked" "$errcode" "$seen"
@@ -997,7 +1022,14 @@ add_dest_message () {
 	local locked=$(sqlquote "${13}")
 	local err_code=$(sqlquote "${14}")
 	local seen=$(sqlquote "${15}")
-	local query="INSERT INTO sms (thread_id, address, person, date, \
+	local query
+
+	[[ $(check_dest_message "$tid" "$address" "$date" "$body") -gt 0 ]] && {
+		echo -e "Message already existing in destination, skipping. TID: $tid Date: $date Address: $address Subject: '${subject:0:10}' Body: '${body:0:10}'"
+		return 1
+	}
+
+	query="INSERT INTO sms (thread_id, address, person, date, \
 				      protocol, read, status, type, \
 				      reply_path_present, subject, body, \
 				      service_center, locked, error_code, seen) \
@@ -1164,7 +1196,11 @@ merge_messages () {
 # Add entry to table sms
 			echo "-------------------------------------"
 			out_tid=${TTBL_TID["$tid"]}
-			add_dest_message "$out_tid" "$address" "$person" "$date" "$protocol" "$read" "$status" "$type" "$reply_path_present" "$subject" "$body" "$service_center" "$locked" "$error_code" "$seen"
+			add_dest_message "$out_tid" "$address" "$person" \
+					 "$date" "$protocol" "$read" "$status" \
+					 "$type" "$reply_path_present" \
+					 "$subject" "$body" "$service_center" \
+					 "$locked" "$error_code" "$seen" || continue
 
 			resync_thread "${THREAD_LUT[$out_tid]}" "$date"
 # Next entry of source database
