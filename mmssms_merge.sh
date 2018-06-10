@@ -271,6 +271,221 @@ cleanup (){
 	[[ -p "$OUTDBFIFO" ]] && rm "$OUTDBFIFO"
 }
 
+# Set the DATE_ADJUST value
+#
+# Usage:	set_dateadjust "$number"
+#
+# $number:	integer value in ms
+# returns:	sets DATE_ADJUST on success, otherwise exits showing usage
+#		information.
+
+set_dateadjust () {
+	local number="$1"
+
+	case $number in
+		''|*[!0-9]*) usage
+		;;
+		*) DATE_ADJUST=$number
+		;;
+	esac
+}
+
+# Strip out phone number separators
+#
+# Usage:	stripped "$number"
+#
+# $number:	string containing a phone number
+# returns:	stripped phone number on stdout
+
+stripped () {
+	local strip="$1"
+
+	strip=${strip//" "}
+	strip=${strip//"-"}
+	strip=${strip//"/"}
+	strip=${strip//"("}
+	strip=${strip//")"}
+
+	echo "$strip"
+}
+
+# Add international prefix to recognized phone numbers
+#
+# Usage:	international_prefix "$number"
+#
+# $number:	string of a plain phone number
+# returns:	international phone number on stdout
+
+international_prefix () {
+	local number="$1"
+	local len
+
+	[[ ${number:0:2} == '00' ]] && number="${number/00/+}"
+
+	[[ -n $PREFIX_PATTERN && -n $PREFIX_REPLACE ]] && {
+		len=${#PREFIX_PATTERN}
+		[[ ${number:0:${len}} == "$PREFIX_PATTERN" ]] &&
+			number="${number/$PREFIX_PATTERN/$PREFIX_REPLACE}"
+	}
+
+	echo "$number"
+}
+
+# Try to convert phone number to international format
+#
+# Usage:	internationalized "$number"
+#
+# $number:	string of a phone number or address
+# returns:	international phone number or address on stdout
+
+internationalized () {
+	local number="$1"
+
+	case $number in
+		''|*[!0-9]*) # NOP if it contains something else than digits
+		;;
+		* ) number=$(international_prefix "$number")
+		;;
+	esac
+
+	echo "$number"
+}
+
+# Check if a given string is a phone number in international format
+#
+# Usage:	internationalnumber "$string"
+#
+# $string:	string of a phone number to check
+# returns:	status code 0 and "true" on stdout on success, otherwise code 1
+#		and "false" on stdout
+
+internationalnumber () {
+	local number="$1"
+
+	[[ ${number:0:1} != '+' ]] && { echo "false"; return 1; }
+
+	case ${number:1} in
+		''|*[!0-9]*) echo "false"; return 1
+		;;
+		*)
+		;;
+	esac
+
+	echo "true"
+	return 0
+}
+
+# Minimum function
+#
+# Usage:	min "$first" "$second"
+#
+# $first:	numerical value
+# $second:	numerical value
+# returns:	smallest of the two values on stdout
+
+min () {
+	echo $(( $1 < $2 ? $1 : $2 ))
+}
+
+# Check if two given address strings match
+#
+# Usage:	matchaddr "$first" "$second" "$exact"
+#
+# $first:	first string containing an address (phone number)
+# $second:	second string containing an address (phone number)
+# $exact:	if set to "true", an exact match will be performed. Otherwise,
+#		only the last characters will be compared (which should be
+#		enough in most cases)
+# returns:	status code 0 and "true" on stdout if both strings match,
+#		otherwise code 1 and "false" on stdout
+
+matchaddr () {
+	local first="$1"
+	local second="$2"
+	local exact="$3"
+	local delta first_len second_len min
+
+	if [[ $exact == 'true' ]]
+		then
+			[[ "$first" == "$second" ]] && {
+				echo 'true'
+				return 0
+			}
+		else
+			first_len=${#first}
+			second_len=${#second}
+			(( delta = first_len - second_len))
+			[[ ${delta##-} -ge 3 ]] && {	# strips off negative sign to get absolute value
+				echo 'false'		# string sizes differ too much
+				return 1
+			}
+			min=$( min "$first_len" "$second_len" )
+			[[ $min -gt 6 ]] && (( min -= 3))
+			[[ "${first:(-$min)}" == "${second:(-$min)}" ]] && {
+				echo 'true'
+				return 0
+			}
+	fi
+
+	echo 'false'
+	return 1
+}
+
+# Replace single quotes (') by two single quotes ('') for SQL content
+#
+# Usage:	sqlquote "$string"
+#
+# $string:	string values to be used for SQL query
+# returns:	quoted string on stdout
+
+sqlquote () {
+	echo "${1//\'/\'\'}"
+}
+
+# Count words in a string
+#
+# Usage:	wordcount "$string"
+#
+# $string:	string of words to count
+# returns:	number of words on stdout
+
+wordcount () {
+	echo $(echo "$1" | wc -w)
+}
+
+# Sort words in a string
+#
+# Usage:	sortwords "$string"
+#
+# $string:	string of words to be sorted
+# returns:	sorted string on stdout
+
+sortwords () {
+	local sorted=$(
+		for el in $1
+			do
+				echo "$el"
+			done | sort -n )
+	echo "${sorted[@]}"
+}
+
+# Translate canonical ids
+#
+# Usage:	translate_cids "$members"
+#
+# $members:	string of canonical IDs to look up in translation table TTBL_ID
+# returns:	string of translated canonical IDs on stdout
+
+translate_cids () {
+	local member
+	local trans_member=$(
+		for member in $1
+			do
+				echo "${TTBL_ID[$member]}"
+			done)
+	echo "${trans_member[@]}"
+}
+
 # Backup the destination database
 #
 # Usage:	backup_db
@@ -986,221 +1201,6 @@ dump_threads () {
 		do
 			echo -e "TID: ${THREAD_ID[$i]} TDate: ${THREAD_DATE[$i]} TRead: ${THREAD_READ[$i]} TSnippet: ${THREAD_SNIPPET[$i]:0:10} TRID: ${THREAD_RID[$i]} TMembers: $(wordcount ${THREAD_RID[$i]})"
 		done
-}
-
-# Set the DATE_ADJUST value
-#
-# Usage:	set_dateadjust "$number"
-#
-# $number:	integer value in ms
-# returns:	sets DATE_ADJUST on success, otherwise exits showing usage
-#		information.
-
-set_dateadjust () {
-	local number="$1"
-
-	case $number in
-		''|*[!0-9]*) usage
-		;;
-		*) DATE_ADJUST=$number
-		;;
-	esac
-}
-
-# Strip out phone number separators
-#
-# Usage:	stripped "$number"
-#
-# $number:	string containing a phone number
-# returns:	stripped phone number on stdout
-
-stripped () {
-	local strip="$1"
-
-	strip=${strip//" "}
-	strip=${strip//"-"}
-	strip=${strip//"/"}
-	strip=${strip//"("}
-	strip=${strip//")"}
-
-	echo "$strip"
-}
-
-# Add international prefix to recognized phone numbers
-#
-# Usage:	international_prefix "$number"
-#
-# $number:	string of a plain phone number
-# returns:	international phone number on stdout
-
-international_prefix () {
-	local number="$1"
-	local len
-
-	[[ ${number:0:2} == '00' ]] && number="${number/00/+}"
-
-	[[ -n $PREFIX_PATTERN && -n $PREFIX_REPLACE ]] && {
-		len=${#PREFIX_PATTERN}
-		[[ ${number:0:${len}} == "$PREFIX_PATTERN" ]] &&
-			number="${number/$PREFIX_PATTERN/$PREFIX_REPLACE}"
-	}
-
-	echo "$number"
-}
-
-# Try to convert phone number to international format
-#
-# Usage:	internationalized "$number"
-#
-# $number:	string of a phone number or address
-# returns:	international phone number or address on stdout
-
-internationalized () {
-	local number="$1"
-
-	case $number in
-		''|*[!0-9]*) # NOP if it contains something else than digits
-		;;
-		* ) number=$(international_prefix "$number")
-		;;
-	esac
-
-	echo "$number"
-}
-
-# Check if a given string is a phone number in international format
-#
-# Usage:	internationalnumber "$string"
-#
-# $string:	string of a phone number to check
-# returns:	status code 0 and "true" on stdout on success, otherwise code 1
-#		and "false" on stdout
-
-internationalnumber () {
-	local number="$1"
-
-	[[ ${number:0:1} != '+' ]] && { echo "false"; return 1; }
-
-	case ${number:1} in
-		''|*[!0-9]*) echo "false"; return 1
-		;;
-		*)
-		;;
-	esac
-
-	echo "true"
-	return 0
-}
-
-# Minimum function
-#
-# Usage:	min "$first" "$second"
-#
-# $first:	numerical value
-# $second:	numerical value
-# returns:	smallest of the two values on stdout
-
-min () {
-	echo $(( $1 < $2 ? $1 : $2 ))
-}
-
-# Check if two given address strings match
-#
-# Usage:	matchaddr "$first" "$second" "$exact"
-#
-# $first:	first string containing an address (phone number)
-# $second:	second string containing an address (phone number)
-# $exact:	if set to "true", an exact match will be performed. Otherwise,
-#		only the last characters will be compared (which should be
-#		enough in most cases)
-# returns:	status code 0 and "true" on stdout if both strings match,
-#		otherwise code 1 and "false" on stdout
-
-matchaddr () {
-	local first="$1"
-	local second="$2"
-	local exact="$3"
-	local delta first_len second_len min
-
-	if [[ $exact == 'true' ]]
-		then
-			[[ "$first" == "$second" ]] && {
-				echo 'true'
-				return 0
-			}
-		else
-			first_len=${#first}
-			second_len=${#second}
-			(( delta = first_len - second_len))
-			[[ ${delta##-} -ge 3 ]] && {	# strips off negative sign to get absolute value
-				echo 'false'		# string sizes differ too much
-				return 1
-			}
-			min=$( min "$first_len" "$second_len" )
-			[[ $min -gt 6 ]] && (( min -= 3))
-			[[ "${first:(-$min)}" == "${second:(-$min)}" ]] && {
-				echo 'true'
-				return 0
-			}
-	fi
-
-	echo 'false'
-	return 1
-}
-
-# Replace single quotes (') by two single quotes ('') for SQL content
-#
-# Usage:	sqlquote "$string"
-#
-# $string:	string values to be used for SQL query
-# returns:	quoted string on stdout
-
-sqlquote () {
-	echo "${1//\'/\'\'}"
-}
-
-# Count words in a string
-#
-# Usage:	wordcount "$string"
-#
-# $string:	string of words to count
-# returns:	number of words on stdout
-
-wordcount () {
-	echo $(echo "$1" | wc -w)
-}
-
-# Sort words in a string
-#
-# Usage:	sortwords "$string"
-#
-# $string:	string of words to be sorted
-# returns:	sorted string on stdout
-
-sortwords () {
-	local sorted=$(
-		for el in $1
-			do
-				echo "$el"
-			done | sort -n )
-	echo "${sorted[@]}"
-}
-
-# Translate canonical ids
-#
-# Usage:	translate_cids "$members"
-#
-# $members:	string of canonical IDs to look up in translation table TTBL_ID
-# returns:	string of translated canonical IDs on stdout
-
-translate_cids () {
-	local member
-	local trans_member=$(
-		for member in $1
-			do
-				echo "${TTBL_ID[$member]}"
-			done)
-	echo "${trans_member[@]}"
 }
 
 # Check parameters
