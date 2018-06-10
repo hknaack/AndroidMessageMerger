@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Android Message Merger
 #
 # This script helps to merge message threads, containing SMS and MMS, from an
@@ -744,6 +743,219 @@ sync_src_threads () {
 		done < "$INDBFIFO"
 }
 
+# Add a message to the destination database
+#
+# Usage:	add_dest_message "$tid" "$address" "$person" "$date" "$protocol" "$read" "$status" "$type" "$rpp" "$subject" "$body" "$scenter" "$locked" "$errcode" "$seen"
+#
+# $tid:		thread ID in the destination database
+# $address:	address of the message
+# $person:	person entry of the message
+# $date:	date of the message
+# $protocol:	protocol of the message
+# $read:	read status of the message
+# $status:	status of the message
+# $type:	type of the message
+# $rpp:		reply_path_present field of the message
+# $subject:	subject of the message
+# $body:	content body of the message
+# $scenter:	service_center entry of the message
+# $locked:	locked flag of the message
+# $errcode:	error code of the message
+# $seen:	seen flag of the message
+#
+# returns:	Code 0 on success, otherwise any error code. Prints some
+#		information on stdout.
+
+add_dest_message () {
+	local tid=$(sqlquote "$1")
+	local address=$(sqlquote "$2")
+	local person=$(sqlquote "$3")
+	local date=$(sqlquote "$4")
+	local protocol=$(sqlquote "$5")
+	local read=$(sqlquote "$6")
+	local status=$(sqlquote "$7")
+	local type=$(sqlquote "$8")
+	local rpp=$(sqlquote "$9")
+	local subject=$(sqlquote "${10}")
+	local body=$(sqlquote "${11}")
+	local scenter=$(sqlquote "${12}")
+	local locked=$(sqlquote "${13}")
+	local err_code=$(sqlquote "${14}")
+	local seen=$(sqlquote "${15}")
+	local query="INSERT INTO sms (thread_id, address, person, date, \
+				      protocol, read, status, type, \
+				      reply_path_present, subject, body, \
+				      service_center, locked, error_code, seen) \
+		     VALUES ('${tid}', '${address}', '${person}', '${date}', \
+			     '${protocol}', '${read}', '${status}', '${type}', \
+			     '${rpp}', '${subject}', '${body}', '${scenter}', \
+			     '${locked}', '${err_code}', '${seen}');"
+
+	echo -e "Adding message to destination. TID: $tid Date: $date Address: $address Subject: '${subject:0:10}' Body: '${body:0:10}'"
+
+	"$SQLITEBIN" "$OUTDB" "$query"
+}
+
+# Write back cached thread data to destination database
+#
+# Usage:	writeback_dest_thread "$entry" "$mdate"
+#
+# $entry:	index of the thread table entry
+# $mdate:	date of the reference message
+#
+# returns:	Code 0 on success, otherwise any error code. Prints some
+#		information on stdout.
+
+writeback_dest_thread () {
+	local entry=$1
+	local mdate=$2
+	local tid=$(sqlquote "${THREAD_ID[$entry]}")
+	local tdate=$(sqlquote "${THREAD_DATE[$entry]}")
+	local snippet=$(sqlquote "${THREAD_SNIPPET[$entry]}")
+	local snippetcs=$(sqlquote "${THREAD_SNIPPETCS[$entry]}")
+	local read=$(sqlquote "${THREAD_READ[$entry]}")
+	local type=$(sqlquote "${THREAD_TYPE[$entry]}")
+	local error=$(sqlquote "${THREAD_ERROR[$entry]}")
+	local hasattachment=$(sqlquote "${THREAD_HASATTACHMENT[$entry]}")
+	local query="UPDATE threads \
+		     SET date='${tdate}', snippet='${snippet}', \
+			 snippet_cs='${snippetcs}', read='${read}', \
+			 type='${type}', error='${error}', \
+			 has_attachment='${hasattachment}' \
+		     WHERE _id='${tid}';"
+
+	echo -e "Destination T-Date ${THREAD_DATE[$entry]} newer than adjusted M-Date $((mdate + DATE_ADJUST)), writing back. '${snippet:0:10}...'"
+
+	"$SQLITEBIN" "$OUTDB" "$query"
+}
+
+# Write back thread date to destination database
+#
+# Usage:	write_dest_thread_date "$entry" "$date"
+#
+# $entry:	index of the thread table entry
+# $date:	date of the thread
+#
+# returns:	Code 0 on success, otherwise any error code
+
+write_dest_thread_date () {
+	local tid=$(sqlquote "${THREAD_ID[$1]}")
+	local date=$(sqlquote "$2")
+	local query="UPDATE threads SET date='${date}' WHERE _id='${tid}';"
+
+	"$SQLITEBIN" "$OUTDB" "$query"
+}
+
+# Read back thread from destination database to the cached threads table
+#
+# Usage:	readback_dest_thread "$entry" "$mdate"
+#
+# $entry:	index of the thread table entry
+# $mdate:	date of the reference message
+#
+# returns:	Code 0 on success, otherwise any error code. Prints some
+#		information on stdout, error messages will be sent to stderr.
+#
+# global vars:	THREAD_DATE[], THREAD_MCOUNT[], THREAD_SNIPPET[], THREAD_READ[],
+#		THREAD_SNIPPETCS[], THREAD_TYPE[], THREAD_ERROR[],
+#		THREAD_HASATTACHMENT[]
+
+readback_dest_thread () {
+	local entry=$1
+	local mdate=$2
+	local tid=$(sqlquote "${THREAD_ID[$entry]}")
+	local old_tdate=${THREAD_DATE["$entry"]}
+	local count=0
+	local date mcount snippet snippetcs read type error hasattachment
+	local query="SELECT date, message_count, snippet, snippet_cs, read, \
+			    type, error, has_attachment \
+		     FROM threads \
+		     WHERE _id='${tid}';"
+
+	"$SQLITEBIN" $OUTDB -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$OUTDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" date mcount snippet snippetcs read type error hasattachment
+		do
+			[[ $((count++)) -ge 1 ]] && {
+				echo_err "Error reading thread entry. count should be 1, but is ${count}"
+				exit 1
+			}
+			THREAD_DATE["$entry"]=$date
+			THREAD_MCOUNT["$entry"]=$mcount
+			THREAD_SNIPPET["$entry"]=$snippet
+			THREAD_SNIPPETCS["$entry"]=$snippetcs
+			THREAD_READ["$entry"]=$read
+			THREAD_TYPE["$entry"]=$type
+			THREAD_ERROR["$entry"]=$error
+			THREAD_HASATTACHMENT["$entry"]=$hasattachment
+			echo -e "Destination Thread date $old_tdate is older than adjusted message date $((mdate + DATE_ADJUST)), reading in snippet '${snippet:0:10}'"
+		done < "$OUTDBFIFO"
+}
+
+# Resynchronize destination threads table with the cached threads table in
+# memory
+#
+# Usage:	resync_thread "$entry" "$mdate"
+#
+# $entry:	index of the threads table entry
+# $mdate:	date of the reference message
+#
+# returns:	Code 0 on success, otherwise any error code.
+
+resync_thread () {
+	local entry=$1
+	local mdate=$2
+
+	if [[ ${THREAD_DATE["$entry"]} -ge $((mdate + DATE_ADJUST)) ]]
+		then
+# If sms date is lower than thread date, write back cached thread entry
+			writeback_dest_thread "$entry" "$mdate"
+		else
+# Otherwise overwrite thread date and read in new thread content
+			write_dest_thread_date "$entry" "$mdate"
+			readback_dest_thread "$entry" "$mdate"
+	fi
+}
+
+# Merge messages from the source database with existing messages in the
+# destination database
+#
+# Usage:	merge_messages
+#
+# returns:	Code 0 on success, otherwise any error code. May output some
+#		progress information on stdout.
+
+merge_messages () {
+	local tid address person date protocol read status type error_code
+	local reply_path_present subject body service_center locked seen out_tid
+	local query="SELECT thread_id, address, person, date, protocol, read, \
+			    status, type, reply_path_present, subject, body, \
+			    service_center, locked, error_code, seen \
+		     FROM sms;"
+
+	"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$query" > "$INDBFIFO" &
+
+	while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" tid address person date protocol read status type reply_path_present subject body service_center locked error_code seen
+		do
+			[[ -z "$address" ]] && {
+				echo "Skipping message with empty Address containing '${body:0:20}...'"
+				continue
+			}
+			[[ -z "$tid" ]] && {
+				echo "Skipping message with empty Thread_ID containing '${body:0:20}...'"
+				continue
+			}
+
+# Add entry to table sms
+			echo "-------------------------------------"
+			out_tid=${TTBL_TID["$tid"]}
+			add_dest_message "$out_tid" "$address" "$person" "$date" "$protocol" "$read" "$status" "$type" "$reply_path_present" "$subject" "$body" "$service_center" "$locked" "$error_code" "$seen"
+
+			resync_thread "${THREAD_LUT[$out_tid]}" "$date"
+# Next entry of source database
+		done < "$INDBFIFO"
+}
+
 # Dump IDs and stripped addresses from the lookup table of canonical adddresses.
 #
 # Usage:	dump_lut
@@ -1073,113 +1285,7 @@ echo "Processing threads from source database"
 sync_src_threads
 
 # Read and process all messages from source database
-QUERY="SELECT thread_id, address, person, date, protocol, read, status, type, \
-	      reply_path_present, subject, body, service_center, locked, \
-	      error_code, seen \
-       FROM sms;"
-"$SQLITEBIN" "$INDB" -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$INDBFIFO" &
-
-while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" S_TID S_ADDRESS S_PERSON S_DATE S_PROTOCOL S_READ S_STATUS S_TYPE S_REPLY_PATH_PRESENT S_SUBJECT S_BODY S_SERVICE_CENTER S_LOCKED S_ERROR_CODE S_SEEN
-	do
-		[[ -z "$S_ADDRESS" ]] && {
-			echo "Skipping message with empty Address containing '${S_BODY:0:20}...'"
-			continue
-		}
-		[[ -z "$S_TID" ]] && {
-			echo "Skipping message with empty Thread_ID containing '${S_BODY:0:20}...'"
-			continue
-		}
-
-# Add entry to table sms
-		echo "-------------------------------------"
-		OUT_TID=${TTBL_TID["$S_TID"]}
-		Q_TID=$(sqlquote "$OUT_TID")
-		Q_ADDRESS=$(sqlquote "$S_ADDRESS")
-		Q_PERSON=$(sqlquote "$S_PERSON")
-		Q_DATE=$(sqlquote "$S_DATE")
-		Q_PROTOCOL=$(sqlquote "$S_PROTOCOL")
-		Q_READ=$(sqlquote "$S_READ")
-		Q_STATUS=$(sqlquote "$S_STATUS")
-		Q_TYPE=$(sqlquote "$S_TYPE")
-		Q_REPLY_PATH_PRESENT=$(sqlquote "$S_REPLY_PATH_PRESENT")
-		Q_SUBJECT=$(sqlquote "$S_SUBJECT")
-		Q_BODY=$(sqlquote "$S_BODY")
-		Q_SERVICE_CENTER=$(sqlquote "$S_SERVICE_CENTER")
-		Q_LOCKED=$(sqlquote "$S_LOCKED")
-		Q_ERROR_CODE=$(sqlquote "$S_ERROR_CODE")
-		Q_SEEN=$(sqlquote "$S_SEEN")
-		echo -e "Adding message to destination. TID: $Q_TID Date: $Q_DATE Address: $Q_ADDRESS Subject: '${Q_SUBJECT:0:10}' Body: '${Q_BODY:0:10}'"
-
-		QUERY="INSERT INTO sms (thread_id, address, person, date, \
-					protocol, read, status, type, \
-					reply_path_present, subject, body, \
-					service_center, locked, error_code, \
-					seen) \
-		       VALUES ('${Q_TID}', '${Q_ADDRESS}', '${Q_PERSON}', \
-			       '${Q_DATE}', '${Q_PROTOCOL}', '${Q_READ}', \
-			       '${Q_STATUS}', '${Q_TYPE}', \
-			       '${Q_REPLY_PATH_PRESENT}', '${Q_SUBJECT}', \
-			       '${Q_BODY}', '${Q_SERVICE_CENTER}', \
-			       '${Q_LOCKED}', '${Q_ERROR_CODE}', '${Q_SEEN}');"
-		"$SQLITEBIN" "$OUTDB" "$QUERY"
-
-		ENTRY=${THREAD_LUT[$OUT_TID]}
-# If sms date is lower than thread date, write back current thread entry
-		if [[ ${THREAD_DATE["$ENTRY"]} -ge $((S_DATE + DATE_ADJUST)) ]]
-			then
-				Q_TDATE=$(sqlquote "${THREAD_DATE[$ENTRY]}")
-				Q_SNIPPET=$(sqlquote "${THREAD_SNIPPET[$ENTRY]}")
-				Q_SNIPPETCS=$(sqlquote "${THREAD_SNIPPETCS[$ENTRY]}")
-				Q_READ=$(sqlquote "${THREAD_READ[$ENTRY]}")
-				Q_TYPE=$(sqlquote "${THREAD_TYPE[$ENTRY]}")
-				Q_ERROR=$(sqlquote "${THREAD_ERROR[$ENTRY]}")
-				Q_HASATTACHMENT=$(sqlquote "${THREAD_HASATTACHMENT[$ENTRY]}")
-				echo -e "Destination T-Date ${THREAD_DATE[$ENTRY]} newer than adjusted M-Date $((S_DATE + DATE_ADJUST)), writing back. '${Q_SNIPPET:0:10}...'"
-
-				QUERY="UPDATE threads \
-				       SET date='${Q_TDATE}', \
-					   snippet='${Q_SNIPPET}', \
-					   snippet_cs='${Q_SNIPPETCS}', \
-					   read='${Q_READ}', type='${Q_TYPE}', \
-					   error='${Q_ERROR}', \
-					   has_attachment='${Q_HASATTACHMENT}' \
-				       WHERE _id='${Q_TID}';"
-				"$SQLITEBIN" "$OUTDB" "$QUERY"
-			else
-# Otherwise overwrite thread date and read in new thread content
-				OLD_THREAD_DATE=${THREAD_DATE["$ENTRY"]}
-                               QUERY="UPDATE threads \
-                                      SET date='${Q_DATE}' \
-                                      WHERE _id='${Q_TID}';"
-                               "$SQLITEBIN" "$OUTDB" "$QUERY"
-
-				QUERY="SELECT date, message_count, snippet, \
-					      snippet_cs, read, type, error, \
-					      has_attachment \
-				       FROM threads \
-				       WHERE _id='${Q_TID}';"
-				"$SQLITEBIN" $OUTDB -newline "$LINESEPARATOR" -separator "$COLSEPARATOR" "$QUERY" > "$OUTDBFIFO" &
-				COUNT=0
-
-				while IFS=$COLSEPARATOR read -r -d "$LINESEPARATOR" T_DATE T_MCOUNT T_SNIPPET T_SNIPPETCS T_READ T_TYPE T_ERROR T_HASATTACHMENT
-					do
-						[[ $((COUNT++)) -ge 1 ]] && {
-							echo "Error reading thread entry. COUNT should be 1, but is ${COUNT}"
-							exit 1
-						}
-						THREAD_DATE["$ENTRY"]=$T_DATE
-						THREAD_MCOUNT["$ENTRY"]=$T_MCOUNT
-						THREAD_SNIPPET["$ENTRY"]=$T_SNIPPET
-						THREAD_SNIPPETCS["$ENTRY"]=$T_SNIPPETCS
-						THREAD_READ["$ENTRY"]=$T_READ
-						THREAD_TYPE["$ENTRY"]=$T_TYPE
-						THREAD_ERROR["$ENTRY"]=$T_ERROR
-						THREAD_HASATTACHMENT["$ENTRY"]=$T_HASATTACHMENT
-						echo -e "Destination Thread date $OLD_THREAD_DATE is older than adjusted message date $((S_DATE + DATE_ADJUST)), reading in snippet '${T_SNIPPET:0:10}'"
-					done < "$OUTDBFIFO"
-			fi
-# Next entry of source database
-	done < "$INDBFIFO"
+merge_messages
 
 echo "Merging done, cleaning up."
 
